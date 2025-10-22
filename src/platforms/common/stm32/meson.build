@@ -211,3 +211,25 @@ platform_stm32f7_dfu = declare_dependency(
 	link_args: platform_stm32f7_link_args,
 	dependencies: [platform_stm32_dfu_common, dependency('opencm3_stm32f7')],
 )
+
+## STM32L4 Platform
+## ________________
+
+platform_stm32l4_args = [
+	'-mcpu=cortex-m4',
+	'-mfloat-abi=hard',
+	'-mfpu=fpv4-sp-d16',
+	'-DSTM32L4',
+]
+
+platform_stm32l4_link_args = [
+	'-mcpu=cortex-m4',
+	'-mfloat-abi=hard',
+	'-mfpu=fpv4-sp-d16',
+]
+
+platform_stm32l4 = declare_dependency(
+	compile_args: platform_stm32l4_args,
+	link_args: platform_stm32l4_link_args,
+	dependencies: [platform_stm32_common, dependency('opencm3_stm32l4')],
+)

@@ -67,7 +67,7 @@ void swo_uart_init(const uint32_t baudrate)
 	rcc_periph_clock_enable(SWO_DMA_CLK);
 
 	/* Reconfigure the GPIO over to UART mode */
-#if defined(STM32F4) || defined(STM32F0) || defined(STM32F3) || defined(STM32F7)
+#if defined(STM32F4) || defined(STM32F0) || defined(STM32F3) || defined(STM32F7) || defined(STM32L4)
 	gpio_mode_setup(SWO_UART_PORT, GPIO_MODE_AF, GPIO_PUPD_PULLUP, SWO_UART_RX_PIN);
 	gpio_set_output_options(SWO_UART_PORT, GPIO_OTYPE_OD, GPIO_OSPEED_100MHZ, SWO_UART_RX_PIN);
 	gpio_set_af(SWO_UART_PORT, SWO_UART_PIN_AF, SWO_UART_RX_PIN);
@@ -112,7 +112,10 @@ void swo_uart_init(const uint32_t baudrate)
 	dma_enable_half_transfer_interrupt(SWO_DMA_BUS, SWO_DMA_CHAN);
 	/* Enable DMA trigger on receive for the UART */
 	usart_enable_rx_dma(SWO_UART);
-
+	/* Enable DMA request*/
+#if defined (DMA_CSELR)
+	dma_set_channel_request(SWO_DMA_BUS, SWO_DMA_CHAN, 2);
+#endif
 	/* Enable the interrupts */
 	nvic_set_priority(SWO_DMA_IRQ, IRQ_PRI_SWO_DMA);
 	nvic_enable_irq(SWO_DMA_IRQ);
@@ -139,7 +142,7 @@ void swo_uart_deinit(void)
 	swo_buffer_bytes_available += amount;
 
 	/* Put the GPIO back into normal service as a GPIO */
-#if defined(STM32F4) || defined(STM32F0) || defined(STM32F3) || defined(STM32F7)
+#if defined(STM32F4) || defined(STM32F0) || defined(STM32F3) || defined(STM32F7) || defined(STM32L4)
 	gpio_mode_setup(SWO_UART_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE, SWO_UART_RX_PIN);
 #else
 	gpio_set_mode(SWO_UART_PORT, GPIO_MODE_INPUT, GPIO_CNF_INPUT_FLOAT, SWO_UART_RX_PIN);

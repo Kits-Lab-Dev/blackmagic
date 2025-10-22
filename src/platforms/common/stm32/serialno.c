@@ -47,7 +47,7 @@ void read_serial_number(void)
 	const volatile uint16_t *const uid = (uint16_t *)DESIG_UNIQUE_ID_BASE;
 #if defined(STM32F4) || defined(STM32F7)
 	int offset = 3;
-#elif defined(STM32L0) || defined(STM32F0) || defined(STM32F3)
+#elif defined(STM32L0) || defined(STM32F0) || defined(STM32F3) || defined(STM32L4)
 	int offset = 5;
 #endif
 	utoa_upper(uid[1] + uid[5], serial_no, 16);

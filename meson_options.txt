@@ -13,6 +13,7 @@ option(
 		'f3',
 		'f4discovery',
 		'hydrabus',
+		'l432',
 		'launchpad-icdi',
 		'native',
 		'stlink',
