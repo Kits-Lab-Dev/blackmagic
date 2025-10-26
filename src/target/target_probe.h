@@ -77,6 +77,7 @@ bool lpc40xx_probe(target_s *target);
 bool lpc43xx_probe(target_s *target);
 bool lpc546xx_probe(target_s *target);
 bool lpc55xx_probe(target_s *target);
+bool niiet_probe(target_s *target);
 bool mm32l0xx_probe(target_s *target);
 bool mm32f3xx_probe(target_s *target);
 bool msp432e4_probe(target_s *target);

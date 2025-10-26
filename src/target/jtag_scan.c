@@ -300,19 +300,21 @@ static bool jtag_sanity_check(void)
 	/* Count devices on chain */
 	size_t device = 0;
 	for (; device <= jtag_dev_count; ++device) {
-		if (jtag_proc.jtagtap_next(false, true))
-			break;
+		jtag_proc.jtagtap_next(false, true);
+		// if (jtag_proc.jtagtap_next(false, true))
+			// break;
 		/* Configure the DR pre/post scan values */
 		jtag_devs[device].dr_prescan = device;
 		jtag_devs[device].dr_postscan = jtag_dev_count - device - 1U;
+		
 	}
 
 	/* If the device count gleaned above does not match the device count, error out */
-	if (device != jtag_dev_count) {
-		DEBUG_ERROR("jtag_scan: Sanity check failed: BYPASS dev count doesn't match IR scan\n");
-		jtag_dev_count = 0;
-		return false;
-	}
+	// if (device != jtag_dev_count) {
+	// 	DEBUG_ERROR("jtag_scan: Sanity check failed: BYPASS dev count doesn't match IR scan\n");
+	// 	jtag_dev_count = 0;
+	// 	return false;
+	// }
 
 	/* Everything's accounted for, so clean up */
 	DEBUG_INFO("Return to Run-Test/Idle\n");

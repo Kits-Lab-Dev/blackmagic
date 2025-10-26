@@ -81,6 +81,12 @@
 #define JEP106_MANUFACTURER_WCH 0x72aU /* Nanjing Yihuo Technology */
 
 /*
+ * Used by WCH (WinChipHead) aka Nanjing Qinheng Microelectronics
+ * Not the same company but related
+ */
+#define JEP106_MANUFACTURER_NIIET 0x0d2dU /* Научно-исследовательский институт электронной техники */
+
+/*
  * This code is not listed in the JEP106 standard, but is used by some stm32f1 clones
  * since we're not using this code elsewhere let's switch to the stm code.
  */

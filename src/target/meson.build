@@ -85,6 +85,7 @@ if is_firmware_build
 		'gd32': 'GigaDevice parts',
 		'hc32': 'HC32 parts',
 		'lpc': 'LPC series parts',
+		'niiet': 'NIIET series parts',
 		'mm32': 'MindMotion parts',
 		'nrf': 'nRF series parts',
 		'nxp': 'Kinetis series parts',
@@ -344,6 +345,13 @@ target_gd32 = declare_dependency(
 	compile_args: ['-DCONFIG_GD32=1'],
 )
 
+target_niiet = declare_dependency(
+	sources: files(
+		'niiet.c',
+	),
+	dependencies: target_riscv32,
+)
+
 target_mm32 = declare_dependency(
 	dependencies: target_stm32f1,
 	compile_args: ['-DCONFIG_MM32=1'],
@@ -424,6 +432,7 @@ libbmd_target_deps = [
 	target_gd32,
 	target_hc32,
 	target_lpc,
+	target_niiet,
 	target_mm32,
 	target_nrf,
 	target_nxp,

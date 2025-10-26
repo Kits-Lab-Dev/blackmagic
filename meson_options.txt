@@ -40,6 +40,7 @@ option(
 		'gd32',
 		'hc32',
 		'lpc',
+		'niiet',
 		'mm32',
 		'nrf',
 		'nxp',

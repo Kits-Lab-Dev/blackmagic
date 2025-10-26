@@ -42,6 +42,8 @@
 #include <libopencm3/stm32/flash.h>
 #include <libopencm3/stm32/spi.h>
 #include <libopencm3/stm32/exti.h>
+#include <libopencm3/cm3/scs.h>
+#include <libopencm3/cm3/dwt.h>
 
 static uint32_t hw_version = 100;
 
@@ -52,7 +54,7 @@ int platform_hwversion(void)
 
 void platform_nrst_set_val(bool assert)
 {
-	gpio_set_val(TRST_PORT, TRST_PIN, assert);
+	gpio_set_val(NRST_PORT, NRST_PIN, assert);
 	if (assert)
 	{
 		for (volatile size_t i = 0; i < 10000; i++)
@@ -62,7 +64,7 @@ void platform_nrst_set_val(bool assert)
 
 bool platform_nrst_get_val()
 {
-	return gpio_get(TRST_PORT, TRST_PIN) != 0;
+	return gpio_get(NRST_PORT, NRST_PIN) != 0;
 }
 
 const char *platform_target_voltage(void)
@@ -115,6 +117,7 @@ void platform_init(void)
 
 	flash_dcache_enable();
 	flash_icache_enable();
+	flash_prefetch_enable();
 	flash_set_ws(FLASH_ACR_LATENCY_4WS);
 
 	/* Enable peripherals */
@@ -127,6 +130,8 @@ void platform_init(void)
 	rcc_periph_clock_enable(RCC_USART2);
 	rcc_periph_clock_enable(RCC_CRC);
 	rcc_periph_clock_enable(RCC_ADC);
+
+	dwt_enable_cycle_counter();
 
 	gpio_mode_setup(LED_PORT_ERROR, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, LED_ERROR);
 	gpio_set_output_options(LED_PORT_ERROR, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, LED_ERROR);
@@ -166,17 +171,17 @@ void platform_init(void)
 	nvic_enable_irq(BTN_IRQ);
 	exti_enable_request(BTN_PIN);
 
-	gpio_set_output_options(TRST_PORT, GPIO_OTYPE_OD, GPIO_OSPEED_VERYHIGH, TRST_PIN);
-	gpio_mode_setup(TRST_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLUP, TRST_PIN);
-	gpio_set(TRST_PORT, TRST_PIN);
+	gpio_set_output_options(NRST_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, NRST_PIN);
+	gpio_mode_setup(NRST_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, NRST_PIN);
+	gpio_clear(NRST_PORT, NRST_PIN);
 
-	gpio_mode_setup(TMS_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_PULLUP, TMS_PIN);
+	gpio_mode_setup(TMS_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, TMS_PIN);
 	gpio_set_output_options(TMS_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, TMS_PIN);
 
 	gpio_mode_setup(TDI_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, TDI_PIN);
 	gpio_set_output_options(TDI_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, TDI_PIN);
 
-	gpio_mode_setup(TDO_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, TDO_PIN);
+	gpio_mode_setup(TDO_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE, TDO_PIN);
 
 	gpio_mode_setup(TCK_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, TCK_PIN);
 	gpio_set_output_options(TCK_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, TCK_PIN);

@@ -32,7 +32,9 @@
 #include <libopencm3/stm32/memorymap.h>
 #include <libopencm3/usb/usbd.h>
 
-
+// #define ENABLE_DEBUG 1
+// #define PLATFORM_HAS_DEBUG
+// extern bool debug_bmp;
 
 #define PLATFORM_HAS_TRACESWO
 #define SWO_ENCODING 2 /* Use only UART mode SWO recovery */
@@ -66,8 +68,8 @@
 #define SWDIO_DIR_PORT TMS_DIR_PORT
 #define SWDIO_DIR_PIN TMS_DIR_PIN
 
-#define TRST_PORT GPIOB
-#define TRST_PIN GPIO1
+#define NRST_PORT GPIOB
+#define NRST_PIN GPIO1
 
 #define SWO_PORT TDO_PORT
 #define SWO_PIN TDO_PIN
@@ -78,11 +80,7 @@
 #define TARGET_V_ADC ADC1
 #define TARGET_V_PORT GPIOA
 #define TARGET_V_PIN GPIO0
-#define TARGET_V_CH 5
-
-#define TMS_SET_MODE()                                                    \
-	gpio_mode_setup(TMS_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, TMS_PIN); \
-	gpio_set_output_options(TMS_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, TMS_PIN);
+#define TARGET_V_CH 5                                       
 
 #define SWDIO_MODE_FLOAT()                                 \
 	do                                                     \
@@ -98,6 +96,8 @@
 		gpio_set_output_options(SWDIO_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, SWDIO_PIN); \
 		gpio_set(TMS_DIR_PORT, TMS_DIR_PIN);                \
 	} while (0)
+
+#define TMS_SET_MODE() 
 
 extern const struct _usbd_driver l432_usb_driver;
 #define USB_DRIVER l432_usb_driver
