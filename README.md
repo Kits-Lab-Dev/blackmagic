@@ -26,12 +26,12 @@ Table of contents:
 
 ## Resources
 
-* [Official website](https://black-magic.org/index.html)
+* [Official website](https://black-magic.org)
 * [Binary builds](https://codeberg.org/blackmagic-debug/blackmagic/releases)
 
 ## Usage
 
-There is a more detailed [getting started guide](https://black-magic.org/getting-started.html) on the website,
+There is a more detailed [getting started guide](https://black-magic.org/docs/intro/getting-started/) on the website,
 however below is a brief guide for both the firmware and BMDA.
 
 ### Black Magic Debug Firmware

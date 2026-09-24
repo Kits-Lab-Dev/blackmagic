@@ -88,7 +88,7 @@ dfu-util -d 0483:df11 --alt 0 -s 0x08000000:leave -D build/blackmagic_blackpill_
 
 - Exit dfu mode: press and release nRST. The newly flashed Black Magic Probe should boot and enumerate.
 
-For other firmware upgrade instructions see the [Firmware Upgrade](https://black-magic.org/upgrade.html) section.
+For other firmware upgrade instructions see the [Firmware Upgrade](https://black-magic.org/docs/intro/upgrade/) section.
 
 ### Using the BMD Bootloader
 If you flashed the bootloader using the above instructions, it may be invoked using the following:

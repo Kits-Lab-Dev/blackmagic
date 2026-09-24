@@ -175,7 +175,7 @@ without specifying identifier string.
 
 ## Operating Systems
 
-[Configuration](https://black-magic.org/getting-started.html) instructions for Windows, Linux and MacOS.
+[Configuration](https://black-magic.org/docs/intro/getting-started/) instructions for Windows, Linux and MacOS.
 
 ### Windows
 
