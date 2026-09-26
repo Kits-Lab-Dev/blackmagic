@@ -36,6 +36,12 @@
 
 /* maybe rewrite this as tcp server */
 
+void rtt_load_recv_buf(const char *data_buf, size_t len)
+{
+    (void)data_buf;
+    (void)len;
+}
+
 #ifndef _WIN32
 #include <termios.h>
 

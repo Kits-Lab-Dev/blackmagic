@@ -42,6 +42,7 @@
 
 #ifdef ENABLE_RTT
 #include "rtt.h"
+#include "rtt_if.h"
 #include "hex_utils.h"
 #endif
 
@@ -137,9 +138,8 @@ static const command_s cmd_list[] = {
 #endif
 #ifdef ENABLE_RTT
 	{"rtt", cmd_rtt,
-		"[enable|disable|detect|status|channel [0..15 ...]|ident [STR]|cblock|ram [RAM_START RAM_END]|poll [MAXMS "
-		"MINMS "
-		"MAXERR]]"},
+		"[enable|disable|detect|status|channel [0..15 ...]|ident [STR]|send [STR]|cblock|ram [RAM_START RAM_END]|poll "
+		"[MAXMS MINMS MAXERR]]"},
 #endif
 #ifdef PLATFORM_HAS_SWO
 #if SWO_ENCODING == 1
@@ -728,6 +728,10 @@ static bool cmd_rtt(target_s *target, int argc, const char **argv)
 				rtt_channel_enabled[channel] = true;
 		}
 		return true;
+	}
+	if (!strncmp(command, "send", command_len)) {
+		size_t len = strlen(argv[2]);
+		rtt_load_recv_buf(argv[2], len);
 	}
 	if (!strncmp(command, "ident", command_len)) {
 		/* If invoked with no trailing arguments, switch off the identity system */
