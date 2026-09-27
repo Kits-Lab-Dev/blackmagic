@@ -22,6 +22,7 @@
 #include "morse.h"
 
 #include <libopencm3/stm32/f4/rcc.h>
+#include <libopencm3/cm3/cortex.h>
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/stm32/exti.h>
@@ -91,10 +92,10 @@ struct sockaddr_in swo_trace_addr = {0};
 static volatile SOCKET socket_parameter = 0;
 
 //
-// Flag used to run the MODE LED state machine
+// Flag used to run the additional app tasks
 //
-static bool run_mode_led_task = false; ///< True to run mode LED task
-static uint32_t press_timer = 0;       ///< The press timer
+static bool run_app_tasks = false; ///< True to run additional app tasks
+static uint32_t press_timer = 0;   ///< The press timer
 
 static bool driver_init_complete = false;     ///< True to driver initialize complete
 static bool g_wifi_connected = false;         ///< True if WiFi connected
@@ -116,6 +117,24 @@ static SOCKET uart_debug_client_socket = SOCK_ERR_INVALID;
 static bool uart_debug_client_connected = false;
 static bool uart_debug_server_is_running = false;
 static bool new_uart_debug_client_connected = false;
+
+/**
+ * @brief Control structure for UART debug send operations
+ * 
+ * This structure is used in the aggregation of the target data
+ * to be sent to the connected client.
+ */
+typedef struct {
+	SOCKET sock;        // The socket for sending the data
+	size_t count;       // The number of bytes in the buffer
+	uint8_t tick_count; // The timing tick counter (in ms)
+	uint8_t buffer[64]; // The aggregation buffer
+} uart_debug_send_control_s;
+
+#define AGGREGATION_TICK_COUNT 50U // Expressed in ms
+#define AGGREGATION_THRESHOLD  20U // The minimum number of bytes that triggers a send
+
+static uart_debug_send_control_s uart_debug_send_control = {0};
 
 static SOCKET swo_trace_server_socket = SOCK_ERR_INVALID;
 static SOCKET swo_trace_client_socket = SOCK_ERR_INVALID;
@@ -260,7 +279,7 @@ void tim2_isr(void)
 		timer_set_oc_value(TIM2, TIM_OC1, new_time);
 		//timer_set_counter (TIM2, 0);
 		m2m_TMR_ISR();
-		run_mode_led_task = true;
+		run_app_tasks = true;
 		press_timer++;
 	}
 	/*
@@ -925,6 +944,8 @@ static void app_socket_callback(SOCKET sock, uint8_t msg_type, void *msg)
 		else if (sock == uart_debug_server_socket) {
 			handle_socket_accept_event(accept_data, &uart_debug_client_socket, &uart_debug_client_connected,
 				&new_uart_debug_client_connected, msg_type);
+			memset(&uart_debug_send_control, 0x00, sizeof(uart_debug_send_control));
+			uart_debug_send_control.sock = uart_debug_client_socket;
 		} else if (sock == swo_trace_server_socket)
 			handle_socket_accept_event(accept_data, &swo_trace_client_socket, &swo_trace_client_connected,
 				&new_swo_trace_client_connected, msg_type);
@@ -956,7 +977,7 @@ static void app_socket_callback(SOCKET sock, uint8_t msg_type, void *msg)
 				// Copy data to circular input buffer
 				//
 				for (int16_t i = 0; local_count != 0;
-					i++, local_count--, input_index = (input_index + 1) % INPUT_BUFFER_SIZE) {
+					 i++, local_count--, input_index = (input_index + 1) % INPUT_BUFFER_SIZE) {
 					input_buffer[input_index] = local_buffer[i];
 				}
 				buffer_count += recv_data->bufSize;
@@ -1414,9 +1435,38 @@ void app_task(void)
 	// Run the mode led task?
 	//
 	timer_disable_irq(TIM2, TIM_DIER_CC1IE);
-	if (run_mode_led_task) {
-		run_mode_led_task = false;
-		mode_led_task();
+	if (run_app_tasks) {
+		run_app_tasks = false;
+		mode_led_task(); // Run the mode led state machine
+		//
+		// Check if a uart client is connected
+		//
+		if (is_uart_client_connected()) {
+			uart_debug_send_control.tick_count++;
+			//
+			// Protect the gathering of the uart debug control data from interrupts
+			//
+			const uint32_t interrupt_state = cm_mask_interrupts(1U);
+			uint32_t local_count = uart_debug_send_control.count;
+			uint8_t buffer[sizeof(uart_debug_send_control.buffer)];
+			//
+			// Check if there is enough data in the output buffer or if the timer has expired
+			//
+			if (local_count != 0 &&
+				(local_count > AGGREGATION_THRESHOLD || uart_debug_send_control.tick_count >= AGGREGATION_TICK_COUNT)) {
+				memcpy(buffer, uart_debug_send_control.buffer, sizeof(uart_debug_send_control.buffer));
+				uart_debug_send_control.count = 0;
+				uart_debug_send_control.tick_count = 0;
+			} else
+				local_count = 0;
+
+			cm_mask_interrupts(interrupt_state); // Restore the previous interrupt state
+			//
+			// Send the data to the client
+			//
+			if (local_count != 0)
+				send(uart_debug_send_control.sock, &buffer[0], local_count, 0);
+		}
 	}
 	timer_enable_irq(TIM2, TIM_DIER_CC1IE);
 	/*
@@ -1558,9 +1608,10 @@ void do_gdb_send(void)
 
 void do_uart_debug_send(void)
 {
-	send(uart_debug_client_socket, &(uart_debug_send_queue[uart_debug_send_queue_out].packet[0]),
-		uart_debug_send_queue[uart_debug_send_queue_out].len, 0);
 	m2mStub_EintDisable();
+	memcpy(&uart_debug_send_control.buffer[uart_debug_send_control.count],
+		uart_debug_send_queue[uart_debug_send_queue_out].packet, uart_debug_send_queue[uart_debug_send_queue_out].len);
+	uart_debug_send_control.count += uart_debug_send_queue[uart_debug_send_queue_out].len;
 	uart_debug_send_queue_out = (uart_debug_send_queue_out + 1) % SEND_QUEUE_SIZE;
 	uart_debug_send_queue_length -= 1;
 	m2mStub_EintEnable();
