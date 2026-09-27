@@ -131,13 +131,6 @@ static uint8_t local_swo_trace_buffer[SWO_TRACE_INPUT_BUFFER_SIZE] = {0}; ///< T
 
 #define WPS_LOCAL_TIMEOUT 30 // Timeout value in seconds
 
-//
-// Sign-on message for new UART data clients
-//
-static const char uart_client_signon[] = "\r\nctxLink UART connection.\r\nPlease enter the UART setup as baud, bits, "
-										 "parity, "
-										 "stop.\r\ne.g. 38400,8,N,1\r\n\r\n";
-
 typedef enum wi_fi_app_states {
 	app_state_wait_for_driver_init,          ///< 0
 	app_state_read_mac_address,              ///< 1
@@ -933,13 +926,9 @@ static void app_socket_callback(SOCKET sock, uint8_t msg_type, void *msg)
 			handle_socket_accept_event(
 				accept_data, &gdb_client_socket, &gdb_client_connected, &new_gdb_client_connected, msg_type);
 		else if (sock == uart_debug_server_socket) {
-			//
-			// Disable any active UART setup by killing the baud rate
-			//
-			usart_set_baudrate(USBUSART, 0);
 			handle_socket_accept_event(accept_data, &uart_debug_client_socket, &uart_debug_client_connected,
 				&new_uart_debug_client_connected, msg_type);
-
+			user_configured_uart = true;
 		} else if (sock == swo_trace_server_socket)
 			handle_socket_accept_event(accept_data, &swo_trace_client_socket, &swo_trace_client_connected,
 				&new_swo_trace_client_connected, msg_type);
@@ -984,24 +973,13 @@ static void app_socket_callback(SOCKET sock, uint8_t msg_type, void *msg)
 				process_recv_error(sock, recv_data, msg_type);
 		} else if (sock == uart_debug_client_socket) {
 			if (recv_data->bufSize > 0) {
-				if (!user_configured_uart) {
-					if (!platform_configure_uart((char *)&local_uart_debug_buffer[0]))
-						//
-						// Setup failed, tell user
-						//
-						send(uart_debug_client_socket, "Syntax error in setup string\r\n",
-							strlen("Syntax error in setup string\r\n"), 0);
-					else
-						user_configured_uart = true;
-				} else {
-					//
-					// Forward data to target MCU
-					//
-					gpio_set(LED_PORT_UART, LED_UART);
-					for (int i = 0; i < recv_data->bufSize; i++)
-						usart_send_blocking(USBUSART, local_uart_debug_buffer[i]);
-					gpio_clear(LED_PORT_UART, LED_UART);
-				}
+				//
+				// Forward data to target MCU
+				//
+				gpio_set(LED_PORT_UART, LED_UART);
+				for (int i = 0; i < recv_data->bufSize; i++)
+					usart_send_blocking(USBUSART, local_uart_debug_buffer[i]);
+				gpio_clear(LED_PORT_UART, LED_UART);
 				memset(&local_uart_debug_buffer[0], 0x00, sizeof(local_uart_debug_buffer));
 				//
 				// Setup to receive future data
@@ -1598,7 +1576,7 @@ void do_awo_trace_send(void)
 		swo_trace_send_queue[swo_trace_send_queue_out].len, 0);
 }
 
-void send_uart_data(uint8_t *buffer, uint8_t length)
+uint16_t send_uart_data(const void *buffer, uint8_t length)
 {
 	m2mStub_EintDisable();
 	memcpy(uart_debug_send_queue[uart_debug_send_queue_in].packet, buffer, length);
@@ -1607,6 +1585,7 @@ void send_uart_data(uint8_t *buffer, uint8_t length)
 	uart_debug_send_queue_length += 1;
 	m2mStub_EintEnable();
 	do_uart_debug_send();
+	return length;
 }
 
 void send_swo_trace_data(uint8_t *buffer, uint8_t length)

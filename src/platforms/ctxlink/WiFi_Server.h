@@ -32,7 +32,7 @@ bool is_gdb_client_connected(void);
 
 void data_tcp_server(void);
 bool is_uart_client_connected(void);
-void send_uart_data(uint8_t *buffer, uint8_t length);
+uint16_t send_uart_data(const void *buffer, uint8_t length);
 
 bool swo_trace_server_active(void);
 void wifi_setup_swo_trace_server(void);
