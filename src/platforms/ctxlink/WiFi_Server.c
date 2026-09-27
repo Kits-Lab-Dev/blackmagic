@@ -116,13 +116,13 @@ static SOCKET uart_debug_client_socket = SOCK_ERR_INVALID;
 static bool uart_debug_client_connected = false;
 static bool user_configured_uart = false;
 static bool uart_debug_server_is_running = false;
-static bool new_uart_debug_client_conncted = false;
+static bool new_uart_debug_client_connected = false;
 
 static SOCKET swo_trace_server_socket = SOCK_ERR_INVALID;
 static SOCKET swo_trace_client_socket = SOCK_ERR_INVALID;
 static bool swo_trace_client_connected = false;
 static bool swo_trace_server_is_running = false;
-static bool new_swo_trace_client_conncted = false;
+static bool new_swo_trace_client_connected = false;
 
 tstrM2MConnInfo conn_info;
 
@@ -938,14 +938,11 @@ static void app_socket_callback(SOCKET sock, uint8_t msg_type, void *msg)
 			//
 			usart_set_baudrate(USBUSART, 0);
 			handle_socket_accept_event(accept_data, &uart_debug_client_socket, &uart_debug_client_connected,
-				&new_uart_debug_client_conncted, msg_type);
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
-			send(uart_debug_client_socket, (void *)&uart_client_signon[0], strlen(&uart_client_signon[0]), 0);
-#pragma GCC diagnostic pop
+				&new_uart_debug_client_connected, msg_type);
+
 		} else if (sock == swo_trace_server_socket)
 			handle_socket_accept_event(accept_data, &swo_trace_client_socket, &swo_trace_client_connected,
-				&new_swo_trace_client_conncted, msg_type);
+				&new_swo_trace_client_connected, msg_type);
 		else {
 			//
 			// Unknown server ... TODO
@@ -974,7 +971,7 @@ static void app_socket_callback(SOCKET sock, uint8_t msg_type, void *msg)
 				// Copy data to circular input buffer
 				//
 				for (int16_t i = 0; local_count != 0;
-					 i++, local_count--, input_index = (input_index + 1) % INPUT_BUFFER_SIZE) {
+					i++, local_count--, input_index = (input_index + 1) % INPUT_BUFFER_SIZE) {
 					input_buffer[input_index] = local_buffer[i];
 				}
 				buffer_count += recv_data->bufSize;
@@ -1419,12 +1416,12 @@ void app_task(void)
 			//
 			recv(gdb_client_socket, &local_buffer[0], INPUT_BUFFER_SIZE, 0);
 		}
-		if (new_uart_debug_client_conncted) {
-			new_uart_debug_client_conncted = false;
+		if (new_uart_debug_client_connected) {
+			new_uart_debug_client_connected = false;
 			recv(uart_debug_client_socket, &local_uart_debug_buffer[0], UART_DEBUG_INPUT_BUFFER_SIZE, 0);
 		}
-		if (new_swo_trace_client_conncted) {
-			new_swo_trace_client_conncted = false;
+		if (new_swo_trace_client_connected) {
+			new_swo_trace_client_connected = false;
 			recv(swo_trace_client_socket, &local_swo_trace_buffer[0], SWO_TRACE_INPUT_BUFFER_SIZE, 0);
 		}
 		break;
