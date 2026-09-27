@@ -53,6 +53,9 @@
 #include "rtt_if.h"
 #include "usb_types.h"
 
+#ifdef CTXLINK
+#include "WiFi_Server.h"
+#endif
 #include <libopencm3/cm3/cortex.h>
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/usb/cdc.h>
@@ -250,7 +253,13 @@ uint32_t debug_serial_fifo_send(const char *const fifo, const uint32_t fifo_begi
 		packet[packet_len++] = fifo[fifo_index++];
 
 	if (packet_len) {
-		const uint16_t written = usbd_ep_write_packet(usbdev, CDCACM_UART_ENDPOINT, packet, packet_len);
+		uint16_t written = 0U;
+#ifdef CTXLINK
+		if (is_uart_client_connected())
+			written = send_uart_data(packet, packet_len);
+		else
+#endif
+			written = usbd_ep_write_packet(usbdev, CDCACM_UART_ENDPOINT, packet, packet_len);
 		return (fifo_begin + written) % AUX_UART_BUFFER_SIZE;
 	}
 	return fifo_begin;
@@ -274,7 +283,11 @@ static void debug_serial_send_data(void)
 	aux_serial_update_receive_buffer_fullness();
 
 	/* Forcibly empty fifo if no USB endpoint. If fifo empty, nothing further to do. */
-	if (usb_get_config() != 1U ||
+	if (!(usb_get_config() == 1U
+#ifdef CTXLINK
+			|| is_uart_client_connected()
+#endif
+				) ||
 		(aux_serial_receive_buffer_empty()
 #if ENABLE_DEBUG == 1 && defined(PLATFORM_HAS_DEBUG)
 			&& debug_serial_fifo_buffer_empty()
@@ -302,7 +315,11 @@ void debug_serial_run(void)
 	aux_serial_set_led(AUX_SERIAL_LED_RX);
 
 	/* Try to send a packet if usb is idle */
-	if (debug_serial_send_complete)
+	if (debug_serial_send_complete
+#ifdef CTXLINK
+		|| is_uart_client_connected()
+#endif
+	)
 		debug_serial_send_data();
 }
 #endif

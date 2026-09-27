@@ -114,7 +114,6 @@ static uint8_t local_uart_debug_buffer[UART_DEBUG_INPUT_BUFFER_SIZE] = {0}; ///<
 static SOCKET uart_debug_server_socket = SOCK_ERR_INVALID;
 static SOCKET uart_debug_client_socket = SOCK_ERR_INVALID;
 static bool uart_debug_client_connected = false;
-static bool user_configured_uart = false;
 static bool uart_debug_server_is_running = false;
 static bool new_uart_debug_client_connected = false;
 
@@ -505,7 +504,6 @@ void wifi_setup_swo_trace_server(void)
 		close(uart_debug_client_socket);
 		uart_debug_client_socket = SOCK_ERR_INVALID; // Mark socket invalid
 		uart_debug_client_connected = false;         // No longer connected
-		user_configured_uart = false;
 	}
 	//
 	// If the UART server is up, close it timeDown
@@ -834,7 +832,6 @@ void process_recv_error(SOCKET socket, t_socketRecv *recv_data, uint8_t msg_type
 			close(uart_debug_client_socket);
 			uart_debug_client_socket = SOCK_ERR_INVALID; // Mark socket invalid
 			uart_debug_client_connected = false;         // No longer connected
-			user_configured_uart = false;
 		} else if (socket == swo_trace_client_socket) {
 			close(swo_trace_client_socket);
 			swo_trace_client_socket = SOCK_ERR_INVALID; // Mark socket invalid
@@ -928,7 +925,6 @@ static void app_socket_callback(SOCKET sock, uint8_t msg_type, void *msg)
 		else if (sock == uart_debug_server_socket) {
 			handle_socket_accept_event(accept_data, &uart_debug_client_socket, &uart_debug_client_connected,
 				&new_uart_debug_client_connected, msg_type);
-			user_configured_uart = true;
 		} else if (sock == swo_trace_server_socket)
 			handle_socket_accept_event(accept_data, &swo_trace_client_socket, &swo_trace_client_connected,
 				&new_swo_trace_client_connected, msg_type);
@@ -1074,7 +1070,7 @@ bool is_gdb_client_connected(void)
 
 bool is_uart_client_connected(void)
 {
-	return user_configured_uart;
+	return uart_debug_client_connected;
 }
 
 bool is_swo_trace_client_connected(void)
