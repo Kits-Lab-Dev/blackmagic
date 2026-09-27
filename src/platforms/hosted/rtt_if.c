@@ -36,10 +36,10 @@
 
 /* maybe rewrite this as tcp server */
 
-void rtt_load_recv_buf(const char *data_buf, size_t len)
+void rtt_load_recv_buf(const char *const buffer, const size_t len)
 {
-    (void)data_buf;
-    (void)len;
+	(void)buffer;
+	(void)len;
 }
 
 #ifndef _WIN32

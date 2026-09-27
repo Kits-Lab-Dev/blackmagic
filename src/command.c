@@ -730,8 +730,7 @@ static bool cmd_rtt(target_s *target, int argc, const char **argv)
 		return true;
 	}
 	if (!strncmp(command, "send", command_len)) {
-		size_t len = strlen(argv[2]);
-		rtt_load_recv_buf(argv[2], len);
+		rtt_load_recv_buf(argv[2], strlen(argv[2]));
 	}
 	if (!strncmp(command, "ident", command_len)) {
 		/* If invoked with no trailing arguments, switch off the identity system */
