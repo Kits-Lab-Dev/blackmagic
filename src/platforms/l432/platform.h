@@ -32,9 +32,10 @@
 #include <libopencm3/stm32/memorymap.h>
 #include <libopencm3/usb/usbd.h>
 
-// #define ENABLE_DEBUG 1
-// #define PLATFORM_HAS_DEBUG
-// extern bool debug_bmp;
+#if ENABLE_DEBUG == 1
+#define PLATFORM_HAS_DEBUG
+extern bool debug_bmp;
+#endif
 
 #define PLATFORM_HAS_TRACESWO
 #define SWO_ENCODING 2 /* Use only UART mode SWO recovery */
