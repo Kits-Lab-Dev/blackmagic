@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2014 Allen Ibara <aibara>
  * Copyright (C) 2015 Gareth McMullin <gareth@blacksphere.co.nz>
- * Copyright (C) 2022-2024 1BitSquared <info@1bitsquared.com>
+ * Copyright (C) 2022-2025 1BitSquared <info@1bitsquared.com>
  * Rewritten by Rachel Mant <git@dragonmux.network>
  *
  * This program is free software: you can redistribute it and/or modify
@@ -18,6 +18,24 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+/*
+ * This file implements support for LPC43xx series devices, providing
+ * memory maps and Flash programming routines.
+ *
+ * References and details about the IAP variant used here:
+ * LPC435x/3x/2x/1x 32-bit ARM Cortex-M4/M0 MCU, Product data sheet, Rev. 5.4
+ *   https://www.nxp.com/docs/en/data-sheet/LPC435X_3X_2X_1X.pdf
+ * LPC436x 32-bit ARM Cortex-M4/M0 MCU, Product data sheet, Rev. 1.3
+ *   https://www.nxp.com/docs/en/data-sheet/LPC436X.pdf
+ * LPC4350/30/20/10 32-bit ARM Cortex-M4/M0 flashless MCU, Product data sheet, Rev. 4.6
+ *   https://www.nxp.com/docs/en/data-sheet/LPC4350_30_20_10.pdf
+ * LPC4370 32-bit ARM Cortex-M4 + 2 x M0 MCU, Product Datasheet, Rev. 2.4
+ *   https://www.nxp.com/docs/en/data-sheet/LPC4370.pdf
+ * and (behind their login wall):
+ * UM10503 - LPC43xx/LPC43Sxx ARM Cortex®-M4/M0 multi-core microcontroller, User manual, Rev. 2.5
+ *   https://www.nxp.com/webapp/Download?colCode=UM10503&location=null
  */
 
 #include <string.h>
@@ -67,8 +85,6 @@
 #define LPC43xx_PARTID_FLASH_CONFIG_43x3 0x44U
 #define LPC43xx_PARTID_FLASH_CONFIG_43x5 0x22U
 #define LPC43xx_PARTID_FLASH_CONFIG_43x7 0x00U
-
-#define IAP_ENTRYPOINT_LOCATION 0x10400100U
 
 #define LPC43xx_SHADOW_BASE      0x00000000U
 #define LPC43xx_SHADOW_SIZE      0x10000000U
@@ -154,12 +170,13 @@
 #define LPC43xx_WDT_PERIOD_MAX 0xffffffU
 #define LPC43xx_WDT_PROTECT    (1U << 4U)
 
-#define IAP_RAM_SIZE LPC43xx_ETBAHB_SRAM_SIZE
-#define IAP_RAM_BASE LPC43xx_ETBAHB_SRAM_BASE
+#define LPC43xx_IAP_ENTRYPOINT_LOCATION 0x10400100U
+#define LPC43xx_IAP_RAM_SIZE            LPC43xx_ETBAHB_SRAM_SIZE
+#define LPC43xx_IAP_RAM_BASE            LPC43xx_ETBAHB_SRAM_BASE
 
-#define IAP_PGM_CHUNKSIZE 4096U
+#define LPC43xx_IAP_PGM_CHUNKSIZE 4096U
 
-#define FLASH_NUM_SECTOR 15U
+#define LPC43xx_FLASH_NUM_SECTOR 15U
 
 #define LPC43xx_FLASH_BANK_A        0U
 #define LPC43xx_FLASH_BANK_A_BASE   0x1a000000U
@@ -244,6 +261,7 @@ typedef struct lpc43xx_spi_flash {
 } lpc43xx_spi_flash_s;
 
 typedef struct lpc43xx_priv {
+	lpc_priv_s base;
 	uint8_t flash_banks;
 	uint32_t mpu_ctrl;
 	uint32_t shadow_map;
@@ -282,7 +300,7 @@ static void lpc43x0_spi_write(
 	target_s *target, uint16_t command, target_addr_t address, const void *buffer, size_t length);
 static void lpc43x0_spi_run_command(target_s *target, uint16_t command, target_addr_t address);
 
-static bool lpc43xx_iap_init(target_flash_s *flash);
+static bool lpc43xx_iap_init(target_s *target);
 static lpc43xx_partid_s lpc43xx_iap_read_partid(target_s *target);
 static bool lpc43xx_enter_flash_mode(target_s *target);
 static bool lpc43xx_iap_flash_erase(target_flash_s *flash, target_addr_t addr, size_t len);
@@ -290,24 +308,19 @@ static bool lpc43xx_iap_mass_erase(target_s *target, platform_timeout_s *print_p
 static void lpc43xx_wdt_set_period(target_s *target);
 static void lpc43xx_wdt_kick(target_s *target);
 
-static void lpc43xx_add_iap_flash(target_s *target, uint32_t iap_entry, uint8_t bank, uint8_t base_sector,
-	uint32_t addr, size_t len, size_t erasesize)
+static void lpc43xx_add_iap_flash(target_s *const target, const uint8_t bank, const uint8_t base_sector,
+	const uint32_t addr, const size_t len, const size_t erasesize)
 {
-	lpc_flash_s *flash = lpc_add_flash(target, addr, len, IAP_PGM_CHUNKSIZE);
-	flash->f.blocksize = erasesize;
-	flash->f.erase = lpc43xx_iap_flash_erase;
+	lpc_flash_s *const flash = lpc_add_flash(target, addr, len, LPC43xx_IAP_PGM_CHUNKSIZE);
+	flash->target_flash.blocksize = erasesize;
+	flash->target_flash.erase = lpc43xx_iap_flash_erase;
 	flash->bank = bank;
 	flash->base_sector = base_sector;
-	flash->iap_entry = iap_entry;
-	flash->iap_ram = IAP_RAM_BASE;
-	flash->iap_msp = IAP_RAM_BASE + IAP_RAM_SIZE;
-	flash->wdt_kick = lpc43xx_wdt_kick;
 }
 
 static void lpc43xx_detect(target_s *const target, const lpc43xx_partid_s part_id)
 {
 	lpc43xx_priv_s *const priv = (lpc43xx_priv_s *)target->target_storage;
-	const uint32_t iap_entry = target_mem32_read32(target, IAP_ENTRYPOINT_LOCATION);
 	uint32_t sram_ahb_size = 0;
 
 	switch (part_id.part) {
@@ -343,12 +356,12 @@ static void lpc43xx_detect(target_s *const target, const lpc43xx_partid_s part_i
 	target_add_ram32(target, LPC43xx_ETBAHB_SRAM_BASE, LPC43xx_ETBAHB_SRAM_SIZE);
 
 	/* All parts with Flash have the first 64kiB bank A region */
-	lpc43xx_add_iap_flash(target, iap_entry, LPC43xx_FLASH_BANK_A, 0U, LPC43xx_FLASH_BANK_A_BASE, LPC43xx_FLASH_64kiB,
-		LPC43xx_FLASH_8kiB);
+	lpc43xx_add_iap_flash(
+		target, LPC43xx_FLASH_BANK_A, 0U, LPC43xx_FLASH_BANK_A_BASE, LPC43xx_FLASH_64kiB, LPC43xx_FLASH_8kiB);
 	/* All parts other than LP43x2 with Flash have the first 64kiB bank B region */
 	if (part_id.flash_config != LPC43xx_PARTID_FLASH_CONFIG_43x2) {
-		lpc43xx_add_iap_flash(target, iap_entry, LPC43xx_FLASH_BANK_B, 0U, LPC43xx_FLASH_BANK_B_BASE,
-			LPC43xx_FLASH_64kiB, LPC43xx_FLASH_8kiB);
+		lpc43xx_add_iap_flash(
+			target, LPC43xx_FLASH_BANK_B, 0U, LPC43xx_FLASH_BANK_B_BASE, LPC43xx_FLASH_64kiB, LPC43xx_FLASH_8kiB);
 		priv->flash_banks = 2;
 	} else
 		priv->flash_banks = 1;
@@ -356,34 +369,29 @@ static void lpc43xx_detect(target_s *const target, const lpc43xx_partid_s part_i
 	switch (part_id.flash_config) {
 	case LPC43xx_PARTID_FLASH_CONFIG_43x2:
 		/* LP43x2 parts have a full bank A but not bank B */
-		lpc43xx_add_iap_flash(target, iap_entry, LPC43xx_FLASH_BANK_A, 8U,
-			LPC43xx_FLASH_BANK_A_BASE + LPC43xx_FLASH_64kiB, LPC43xx_FLASH_192kiB + LPC43xx_FLASH_256kiB,
-			LPC43xx_FLASH_64kiB);
+		lpc43xx_add_iap_flash(target, LPC43xx_FLASH_BANK_A, 8U, LPC43xx_FLASH_BANK_A_BASE + LPC43xx_FLASH_64kiB,
+			LPC43xx_FLASH_192kiB + LPC43xx_FLASH_256kiB, LPC43xx_FLASH_64kiB);
 		break;
 	case LPC43xx_PARTID_FLASH_CONFIG_43x3:
 		/* LP43x3 parts have the first 256kiB of both bank A and bank B */
-		lpc43xx_add_iap_flash(target, iap_entry, LPC43xx_FLASH_BANK_A, 8U,
-			LPC43xx_FLASH_BANK_A_BASE + LPC43xx_FLASH_64kiB, LPC43xx_FLASH_192kiB, LPC43xx_FLASH_64kiB);
-		lpc43xx_add_iap_flash(target, iap_entry, LPC43xx_FLASH_BANK_B, 8U,
-			LPC43xx_FLASH_BANK_B_BASE + LPC43xx_FLASH_64kiB, LPC43xx_FLASH_192kiB, LPC43xx_FLASH_64kiB);
+		lpc43xx_add_iap_flash(target, LPC43xx_FLASH_BANK_A, 8U, LPC43xx_FLASH_BANK_A_BASE + LPC43xx_FLASH_64kiB,
+			LPC43xx_FLASH_192kiB, LPC43xx_FLASH_64kiB);
+		lpc43xx_add_iap_flash(target, LPC43xx_FLASH_BANK_B, 8U, LPC43xx_FLASH_BANK_B_BASE + LPC43xx_FLASH_64kiB,
+			LPC43xx_FLASH_192kiB, LPC43xx_FLASH_64kiB);
 		break;
 	case LPC43xx_PARTID_FLASH_CONFIG_43x5:
 		/* LP43x3 parts have the first 256kiB and an additional 128kiB of both bank A and bank B */
-		lpc43xx_add_iap_flash(target, iap_entry, LPC43xx_FLASH_BANK_A, 8U,
-			LPC43xx_FLASH_BANK_A_BASE + LPC43xx_FLASH_64kiB, LPC43xx_FLASH_192kiB + LPC43xx_FLASH_128kiB,
-			LPC43xx_FLASH_64kiB);
-		lpc43xx_add_iap_flash(target, iap_entry, LPC43xx_FLASH_BANK_B, 8U,
-			LPC43xx_FLASH_BANK_B_BASE + LPC43xx_FLASH_64kiB, LPC43xx_FLASH_192kiB + LPC43xx_FLASH_128kiB,
-			LPC43xx_FLASH_64kiB);
+		lpc43xx_add_iap_flash(target, LPC43xx_FLASH_BANK_A, 8U, LPC43xx_FLASH_BANK_A_BASE + LPC43xx_FLASH_64kiB,
+			LPC43xx_FLASH_192kiB + LPC43xx_FLASH_128kiB, LPC43xx_FLASH_64kiB);
+		lpc43xx_add_iap_flash(target, LPC43xx_FLASH_BANK_B, 8U, LPC43xx_FLASH_BANK_B_BASE + LPC43xx_FLASH_64kiB,
+			LPC43xx_FLASH_192kiB + LPC43xx_FLASH_128kiB, LPC43xx_FLASH_64kiB);
 		break;
 	case LPC43xx_PARTID_FLASH_CONFIG_43x7:
 		/* LP43x3 parts have the full 512kiB each of both bank A and bank B */
-		lpc43xx_add_iap_flash(target, iap_entry, LPC43xx_FLASH_BANK_A, 8U,
-			LPC43xx_FLASH_BANK_A_BASE + LPC43xx_FLASH_64kiB, LPC43xx_FLASH_192kiB + LPC43xx_FLASH_256kiB,
-			LPC43xx_FLASH_64kiB);
-		lpc43xx_add_iap_flash(target, iap_entry, LPC43xx_FLASH_BANK_B, 8U,
-			LPC43xx_FLASH_BANK_B_BASE + LPC43xx_FLASH_64kiB, LPC43xx_FLASH_192kiB + LPC43xx_FLASH_256kiB,
-			LPC43xx_FLASH_64kiB);
+		lpc43xx_add_iap_flash(target, LPC43xx_FLASH_BANK_A, 8U, LPC43xx_FLASH_BANK_A_BASE + LPC43xx_FLASH_64kiB,
+			LPC43xx_FLASH_192kiB + LPC43xx_FLASH_256kiB, LPC43xx_FLASH_64kiB);
+		lpc43xx_add_iap_flash(target, LPC43xx_FLASH_BANK_B, 8U, LPC43xx_FLASH_BANK_B_BASE + LPC43xx_FLASH_64kiB,
+			LPC43xx_FLASH_192kiB + LPC43xx_FLASH_256kiB, LPC43xx_FLASH_64kiB);
 		break;
 	}
 
@@ -480,12 +488,18 @@ bool lpc43xx_probe(target_s *const target)
 
 	/* 4 is for rev '-' parts with on-chip Flash, 7 is for rev 'A' parts with on-chip Flash */
 	if (chip_code == 4U || chip_code == 7U) {
-		lpc43xx_priv_s *priv = calloc(1, sizeof(lpc43xx_priv_s));
+		lpc43xx_priv_s *const priv = calloc(1, sizeof(*priv));
 		if (!priv) { /* calloc failed: heap exhaustion */
 			DEBUG_ERROR("calloc: failed in %s\n", __func__);
 			return false;
 		}
 		target->target_storage = priv;
+
+		priv->base.wdt_kick = lpc43xx_wdt_kick;
+		priv->base.iap_params = lpc_iap_params;
+		priv->base.iap_entry = target_mem32_read32(target, LPC43xx_IAP_ENTRYPOINT_LOCATION);
+		priv->base.iap_ram = LPC43xx_IAP_RAM_BASE;
+		priv->base.iap_msp = LPC43xx_IAP_RAM_BASE + LPC43xx_IAP_RAM_SIZE;
 
 		const lpc43xx_partid_s part_id = lpc43xx_iap_read_partid(target);
 		DEBUG_WARN("LPC43xx part ID: 0x%08" PRIx32 ":%02x\n", part_id.part, part_id.flash_config);
@@ -556,7 +570,7 @@ static uint8_t lpc43x0_read_boot_src(target_s *const target)
 
 static void lpc43x0_determine_flash_interface(target_s *const target)
 {
-	lpc43x0_priv_s *priv = (lpc43x0_priv_s *)target->target_storage;
+	lpc43x0_priv_s *const priv = (lpc43x0_priv_s *)target->target_storage;
 	/*
 	 * If the device is not operating out of SRAM1 (meaning the boot ROM booted to a XIP mode)
 	 * then we can analyse the active configuration and take it at face value - that will work.
@@ -623,7 +637,7 @@ static bool lpc43x0_attach(target_s *const target)
 		return false;
 
 	if (!target->target_storage) {
-		lpc43x0_priv_s *priv = calloc(1, sizeof(lpc43x0_priv_s));
+		lpc43x0_priv_s *const priv = calloc(1, sizeof(*priv));
 		if (!priv) { /* calloc failed: heap exhaustion */
 			DEBUG_ERROR("calloc: failed in %s\n", __func__);
 			return false;
@@ -798,7 +812,7 @@ static lpc43xx_partid_s lpc43x0_spi_read_partid(target_s *const target)
 
 static void lpc43x0_spi_abort(target_s *const target)
 {
-	lpc43x0_priv_s *const priv = (lpc43x0_priv_s *)target->target_storage;
+	const lpc43x0_priv_s *const priv = (lpc43x0_priv_s *)target->target_storage;
 	if (priv->interface == FLASH_SPIFI) {
 		/* If in SPIFI mode, reset the controller to get to a known state */
 		target_mem32_write32(target, LPC43x0_SPIFI_STAT, LPC43x0_SPIFI_STATUS_RESET);
@@ -871,7 +885,7 @@ static void lpc43x0_spi_setup_xfer(
 static void lpc43x0_spi_read(target_s *const target, const uint16_t command, const target_addr_t address,
 	void *const buffer, const size_t length)
 {
-	lpc43x0_priv_s *const priv = (lpc43x0_priv_s *)target->target_storage;
+	const lpc43x0_priv_s *const priv = (lpc43x0_priv_s *)target->target_storage;
 	if (priv->interface == FLASH_SPIFI) {
 		lpc43x0_spi_setup_xfer(target, command, address, length);
 		uint8_t *const data = (uint8_t *)buffer;
@@ -895,7 +909,7 @@ static void lpc43x0_spi_read(target_s *const target, const uint16_t command, con
 static void lpc43x0_spi_write(target_s *const target, const uint16_t command, const target_addr_t address,
 	const void *const buffer, const size_t length)
 {
-	lpc43x0_priv_s *const priv = (lpc43x0_priv_s *)target->target_storage;
+	const lpc43x0_priv_s *const priv = (lpc43x0_priv_s *)target->target_storage;
 	if (priv->interface == FLASH_SPIFI) {
 		lpc43x0_spi_setup_xfer(target, command, address, length);
 		const uint8_t *const data = (const uint8_t *)buffer;
@@ -915,9 +929,9 @@ static void lpc43x0_spi_write(target_s *const target, const uint16_t command, co
 	}
 }
 
-static void lpc43x0_spi_run_command(target_s *const target, const uint16_t command, target_addr_t address)
+static void lpc43x0_spi_run_command(target_s *const target, const uint16_t command, const target_addr_t address)
 {
-	lpc43x0_priv_s *const priv = (lpc43x0_priv_s *)target->target_storage;
+	const lpc43x0_priv_s *const priv = (lpc43x0_priv_s *)target->target_storage;
 	if (priv->interface == FLASH_SPIFI) {
 		lpc43x0_spi_setup_xfer(target, command, address, 0U);
 		lpc43x0_spi_wait_complete(target);
@@ -927,11 +941,9 @@ static void lpc43x0_spi_run_command(target_s *const target, const uint16_t comma
 
 /* LPC43xx IAP On-board Flash part routines */
 
-static bool lpc43xx_iap_init(target_flash_s *const target_flash)
+static bool lpc43xx_iap_init(target_s *const target)
 {
-	target_s *const target = target_flash->t;
 	lpc43xx_priv_s *const priv = (lpc43xx_priv_s *)target->target_storage;
-	lpc_flash_s *const flash = (lpc_flash_s *)target_flash;
 	/* If on the M4 core, check and set the shadow region mapping */
 	if ((target->cpuid & CORTEX_CPUID_PARTNO_MASK) == CORTEX_M4) {
 		priv->shadow_map = target_mem32_read32(target, LPC43xx_M4MEMMAP);
@@ -959,7 +971,7 @@ static bool lpc43xx_iap_init(target_flash_s *const target_flash)
 	 * returning IAP_CMD_INIT. Test instead that it didn't fail by testing for the internally
 	 * generated IAP_STATUS_INVALID_COMMAND used by lpc_iap_call()'s failure paths.
 	 */
-	return lpc_iap_call(flash, NULL, IAP_CMD_INIT) != IAP_STATUS_INVALID_COMMAND;
+	return lpc_iap_call(target, NULL, IAP_CMD_INIT) != IAP_STATUS_INVALID_COMMAND;
 }
 
 /*
@@ -968,14 +980,6 @@ static bool lpc43xx_iap_init(target_flash_s *const target_flash)
  */
 static lpc43xx_partid_s lpc43xx_iap_read_partid(target_s *const target)
 {
-	/* Define a fake Flash structure so we can invoke the IAP system */
-	lpc_flash_s flash;
-	flash.f.t = target;
-	flash.wdt_kick = lpc43xx_wdt_kick;
-	flash.iap_entry = target_mem32_read32(target, IAP_ENTRYPOINT_LOCATION);
-	flash.iap_ram = IAP_RAM_BASE;
-	flash.iap_msp = IAP_RAM_BASE + IAP_RAM_SIZE;
-
 	/* Prepare a failure result in case readback fails */
 	lpc43xx_partid_s result;
 	result.part = LPC43xx_PARTID_INVALID;
@@ -983,7 +987,7 @@ static lpc43xx_partid_s lpc43xx_iap_read_partid(target_s *const target)
 
 	/* Read back the part ID */
 	iap_result_s iap_result;
-	if (!lpc43xx_iap_init(&flash.f) || lpc_iap_call(&flash, &iap_result, IAP_CMD_PARTID) != IAP_STATUS_CMD_SUCCESS)
+	if (!lpc43xx_iap_init(target) || lpc_iap_call(target, &iap_result, IAP_CMD_PARTID) != IAP_STATUS_CMD_SUCCESS)
 		return result;
 
 	/* Prepare the result and return it */
@@ -992,9 +996,9 @@ static lpc43xx_partid_s lpc43xx_iap_read_partid(target_s *const target)
 	return result;
 }
 
-static bool lpc43xx_iap_flash_erase(target_flash_s *flash, const target_addr_t addr, const size_t len)
+static bool lpc43xx_iap_flash_erase(target_flash_s *const flash, const target_addr_t addr, const size_t len)
 {
-	if (!lpc43xx_iap_init(flash))
+	if (!lpc43xx_iap_init(flash->t))
 		return false;
 	return lpc_flash_erase(flash, addr, len);
 }
@@ -1003,13 +1007,12 @@ static bool lpc43xx_iap_mass_erase(target_s *const target, platform_timeout_s *c
 {
 	lpc43xx_priv_s *const priv = (lpc43xx_priv_s *)target->target_storage;
 
-	lpc43xx_iap_init(target->flash);
+	lpc43xx_iap_init(target);
 
 	/* FIXME: since this is looking like bank mass erases, maybe this should be in flash->mass_erase */
 	for (size_t bank = 0; bank < priv->flash_banks; ++bank) {
-		lpc_flash_s *const flash = (lpc_flash_s *)target->flash;
-		if (lpc_iap_call(flash, NULL, IAP_CMD_PREPARE, 0, FLASH_NUM_SECTOR - 1U, bank) ||
-			lpc_iap_call(flash, NULL, IAP_CMD_ERASE, 0, FLASH_NUM_SECTOR - 1U, CPU_CLK_KHZ, bank))
+		if (lpc_iap_call(target, NULL, IAP_CMD_PREPARE, 0, LPC43xx_FLASH_NUM_SECTOR - 1U, bank) ||
+			lpc_iap_call(target, NULL, IAP_CMD_ERASE, 0, LPC43xx_FLASH_NUM_SECTOR - 1U, CPU_CLK_KHZ, bank))
 			return false;
 		target_print_progress(print_progess);
 	}
@@ -1019,7 +1022,7 @@ static bool lpc43xx_iap_mass_erase(target_s *const target, platform_timeout_s *c
 
 /* XXX: Why does this command exist at all? Thsi should already be being provided by other layers before this one */
 /* Reset all major systems _except_ debug */
-static bool lpc43xx_cmd_reset(target_s *target, int argc, const char **argv)
+static bool lpc43xx_cmd_reset(target_s *const target, const int argc, const char **const argv)
 {
 	(void)argc;
 	(void)argv;
@@ -1035,7 +1038,7 @@ static bool lpc43xx_cmd_reset(target_s *target, int argc, const char **argv)
  * This is done independently of writing to give the user a chance to verify flash
  * before changing it.
  */
-static bool lpc43xx_cmd_mkboot(target_s *target, int argc, const char **argv)
+static bool lpc43xx_cmd_mkboot(target_s *const target, const int argc, const char **const argv)
 {
 	/* Usage: mkboot 0 or mkboot 1 */
 	if (argc != 2) {
@@ -1049,11 +1052,10 @@ static bool lpc43xx_cmd_mkboot(target_s *target, int argc, const char **argv)
 		return false;
 	}
 
-	lpc43xx_iap_init(target->flash);
+	lpc43xx_iap_init(target);
 
-	/* special command to compute/write magic vector for signature */
-	lpc_flash_s *flash = (lpc_flash_s *)target->flash;
-	if (lpc_iap_call(flash, NULL, IAP_CMD_SET_ACTIVE_BANK, bank, CPU_CLK_KHZ)) {
+	/* Special command to compute/write magic vector for signature */
+	if (lpc_iap_call(target, NULL, IAP_CMD_SET_ACTIVE_BANK, bank, CPU_CLK_KHZ)) {
 		tc_printf(target, "Set bootable failed.\n");
 		return false;
 	}
@@ -1062,20 +1064,20 @@ static bool lpc43xx_cmd_mkboot(target_s *target, int argc, const char **argv)
 	return true;
 }
 
-static void lpc43xx_wdt_set_period(target_s *target)
+static void lpc43xx_wdt_set_period(target_s *const target)
 {
 	/* Check if WDT is on */
-	uint32_t wdt_mode = target_mem32_read32(target, LPC43xx_WDT_MODE);
+	const uint32_t wdt_mode = target_mem32_read32(target, LPC43xx_WDT_MODE);
 
 	/* If WDT on, we can't disable it, but we may be able to set a long period */
 	if (wdt_mode && !(wdt_mode & LPC43xx_WDT_PROTECT))
 		target_mem32_write32(target, LPC43xx_WDT_CNT, LPC43xx_WDT_PERIOD_MAX);
 }
 
-static void lpc43xx_wdt_kick(target_s *target)
+static void lpc43xx_wdt_kick(target_s *const target)
 {
 	/* Check if WDT is on */
-	uint32_t wdt_mode = target_mem32_read32(target, LPC43xx_WDT_MODE);
+	const uint32_t wdt_mode = target_mem32_read32(target, LPC43xx_WDT_MODE);
 
 	/* If WDT on, kick it so we don't get the target reset */
 	if (wdt_mode) {

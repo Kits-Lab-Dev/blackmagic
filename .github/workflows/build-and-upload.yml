@@ -30,9 +30,9 @@ jobs:
     strategy:
       matrix:
         os:
-          - {id: ubuntu-22.04, name: jammy}
+          - {id: ubuntu-24.04, name: noble}
         compiler:
-          - '12.2.Rel1'
+          - '14.3.Rel1'
         probe:
           - '96b_carbon'
           - 'blackpill-f401cc'
@@ -75,7 +75,7 @@ jobs:
       # Install and setup a suitable Meson + Ninja
       - name: Setup Meson + Ninja
         run: |
-          sudo python3 -m pip install --upgrade pip setuptools wheel
+          sudo apt install -y python3-pip python3-setuptools python3-wheel
           sudo python3 -m pip install meson ninja
         working-directory: ${{ runner.temp }}
 
@@ -147,11 +147,11 @@ jobs:
     strategy:
       matrix:
         os:
-          - {id: ubuntu-22.04, name: jammy}
+          - {id: ubuntu-24.04, name: noble}
         compiler:
-          - 'clang-13' # Native Clang compiler for the CI image
-          - 'clang-18' # Latest Clang compiler from the apt mirror
-          - 'gcc-11' # Native GCC compiler for the CI image
+          - 'clang-17' # Native Clang compiler for the CI image
+          - 'clang-20' # Latest Clang compiler from the apt mirror
+          - 'gcc-12' # Native GCC compiler for the CI image
           - 'gcc-13' # Latest GCC compiler from the toolchain PPA
       fail-fast: false
 
@@ -205,7 +205,7 @@ jobs:
       # Install and setup a suitable Meson + Ninja
       - name: Setup Meson + Ninja
         run: |
-          sudo python3 -m pip install --upgrade pip setuptools wheel
+          sudo apt install -y python3-pip python3-setuptools python3-wheel
           sudo python3 -m pip install meson ninja
         working-directory: ${{ runner.temp }}
 

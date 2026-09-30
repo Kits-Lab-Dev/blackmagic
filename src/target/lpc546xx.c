@@ -1,9 +1,10 @@
 /*
  * This file is part of the Black Magic Debug project.
  *
- * Copyright (C) 2014 Allen Ibara <aibara>
- * Copyright (C) 2015 Gareth McMullin <gareth@blacksphere.co.nz>
  * Copyright (C) 2020 Eivind Bergem <eivindbergem>
+ * Copyright (C) 2023-2025 1BitSquared <info@1bitsquared.com>
+ * Written by Eivind Bergem <eivindbergem>
+ * Modified by Rachel Mant <git@dragonmux.network>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +20,18 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+/*
+ * This file implements support for LPC546xx series devices, providing
+ * memory maps and Flash programming routines.
+ *
+ * References and details about the IAP variant used here:
+ * LPC546xx 32-bit ARM Cortex-M4 microcontroller, Product data sheet, Rev. 2.8
+ *   https://www.nxp.com/docs/en/data-sheet/LPC546XX.pdf
+ * and (behind their login wall):
+ * UM10912 - LPC546xx User manual, Rev. 2.4
+ *   https://www.nxp.com/webapp/Download?colCode=UM10912&location=null
+ */
+
 #include <string.h>
 #include "general.h"
 #include "target.h"
@@ -26,40 +39,37 @@
 #include "cortexm.h"
 #include "lpc_common.h"
 
-#define LPC546XX_CHIPID 0x40000ff8U
-
-#define IAP_ENTRYPOINT_LOCATION 0x03000204U
-
-#define LPC546XX_ETBAHB_SRAM_BASE 0x20000000U
-
+#define LPC546xx_ETBAHB_SRAM_BASE 0x20000000U
 /* Only SRAM0 bank is enabled after reset */
-#define LPC546XX_ETBAHB_SRAM_SIZE (64U * 1024U)
+#define LPC546xx_ETBAHB_SRAM_SIZE (64U * 1024U)
 
-#define LPC546XX_WDT_MODE       0x4000c000U
-#define LPC546XX_WDT_CNT        0x4000c004U
-#define LPC546XX_WDT_FEED       0x4000c008U
-#define LPC546XX_WDT_PERIOD_MAX 0xffffffU
-#define LPC546XX_WDT_PROTECT    (1U << 4U)
+#define LPC546xx_CHIPID 0x40000ff8U
 
-#define LPC546XX_MAINCLKSELA 0x40000280U
-#define LPC546XX_MAINCLKSELB 0x40000284U
-#define LPC546XX_AHBCLKDIV   0x40000380U
-#define LPC546XX_FLASHCFG    0x40000400U
+#define LPC546xx_IAP_ENTRYPOINT_LOCATION 0x03000204U
+#define LPC546xx_IAP_RAM_BASE            LPC546xx_ETBAHB_SRAM_BASE
+#define LPC546xx_IAP_RAM_SIZE            LPC546xx_ETBAHB_SRAM_SIZE
 
-#define IAP_RAM_SIZE LPC546XX_ETBAHB_SRAM_SIZE
-#define IAP_RAM_BASE LPC546XX_ETBAHB_SRAM_BASE
+#define LPC546xx_IAP_PGM_CHUNKSIZE 4096U
 
-#define IAP_PGM_CHUNKSIZE 4096U
+#define LPC546xx_WDT_MODE       0x4000c000U
+#define LPC546xx_WDT_CNT        0x4000c004U
+#define LPC546xx_WDT_FEED       0x4000c008U
+#define LPC546xx_WDT_PERIOD_MAX 0xffffffU
+#define LPC546xx_WDT_PROTECT    (1U << 4U)
+
+#define LPC546xx_MAINCLKSELA 0x40000280U
+#define LPC546xx_MAINCLKSELB 0x40000284U
+#define LPC546xx_AHBCLKDIV   0x40000380U
+#define LPC546xx_FLASHCFG    0x40000400U
 
 static bool lpc546xx_cmd_read_partid(target_s *target, int argc, const char **argv);
-static bool lpc546xx_cmd_read_uid(target_s *target, int argc, const char **argv);
 static bool lpc546xx_cmd_reset_attach(target_s *target, int argc, const char **argv);
 static bool lpc546xx_cmd_reset(target_s *target, int argc, const char **argv);
 static bool lpc546xx_cmd_write_sector(target_s *target, int argc, const char **argv);
 
 const command_s lpc546xx_cmd_list[] = {
 	{"read_partid", lpc546xx_cmd_read_partid, "Read out the 32-bit part ID using IAP."},
-	{"read_uid", lpc546xx_cmd_read_uid, "Read out the 16-byte UID."},
+	{"read_uid", lpc_cmd_read_uid, "Read out the 16-byte UID."},
 	{"reset_attach", lpc546xx_cmd_reset_attach,
 		"Reset target. Reset debug registers. Re-attach debugger. This restores "
 		"the chip to the very start of program execution, after the ROM bootloader."},
@@ -113,27 +123,25 @@ static const lpc546xx_device_s *lpc546xx_get_device(const uint32_t chipid)
 	return NULL;
 }
 
-static void lpc546xx_add_flash(target_s *const target, const target_addr32_t iap_entry, const uint8_t base_sector,
-	const target_addr32_t addr, const size_t len, const size_t erasesize)
+static void lpc546xx_add_flash(target_s *const target, const uint8_t base_sector, const target_addr32_t addr,
+	const size_t len, const size_t erasesize)
 {
-	lpc_flash_s *const flash = lpc_add_flash(target, addr, len, IAP_PGM_CHUNKSIZE);
-	flash->f.blocksize = erasesize;
-	flash->f.erase = lpc546xx_flash_erase;
+	lpc_flash_s *const flash = lpc_add_flash(target, addr, len, LPC546xx_IAP_PGM_CHUNKSIZE);
+	flash->target_flash.blocksize = erasesize;
+	flash->target_flash.erase = lpc546xx_flash_erase;
 	/* LPC546xx devices require the checksum value written into the vector table in sector 0 */
-	flash->f.write = lpc_flash_write_magic_vect;
+	flash->target_flash.write = lpc_flash_write_magic_vect;
 	flash->bank = 0;
 	flash->base_sector = base_sector;
-	flash->iap_entry = iap_entry;
-	flash->iap_ram = IAP_RAM_BASE;
-	flash->iap_msp = IAP_RAM_BASE + IAP_RAM_SIZE;
-	flash->wdt_kick = lpc546xx_wdt_kick;
 }
 
 bool lpc546xx_probe(target_s *const target)
 {
-	const uint32_t chipid = target_mem32_read32(target, LPC546XX_CHIPID);
+	/* Read the chip ID register */
+	const uint32_t chipid = target_mem32_read32(target, LPC546xx_CHIPID);
 
 	DEBUG_INFO("LPC546xx: Part ID 0x%08" PRIx32 "\n", chipid);
+	/* Try and identify the part is possible */
 	const lpc546xx_device_s *const device = lpc546xx_get_device(chipid);
 	if (!device)
 		return false;
@@ -147,7 +155,23 @@ bool lpc546xx_probe(target_s *const target)
 	 */
 	const uint32_t sram123_size = (uint32_t)device->sram123_kbytes * 1024U;
 
-	lpc546xx_add_flash(target, IAP_ENTRYPOINT_LOCATION, 0, 0x0, flash_size, 0x8000);
+	/* Allocate the private structure needed for lpc_iap_call() to work */
+	lpc_priv_s *const priv = calloc(1, sizeof(*priv));
+	if (!priv) { /* calloc failed: heap exhaustion */
+		DEBUG_ERROR("calloc: failed in %s\n", __func__);
+		return false;
+	}
+	target->target_storage = priv;
+
+	/* Set the structure up for this target */
+	priv->wdt_kick = lpc546xx_wdt_kick;
+	priv->iap_params = lpc_iap_params;
+	priv->iap_entry = LPC546xx_IAP_ENTRYPOINT_LOCATION;
+	priv->iap_ram = LPC546xx_IAP_RAM_BASE;
+	priv->iap_msp = LPC546xx_IAP_RAM_BASE + LPC546xx_IAP_RAM_SIZE;
+
+	/* Register Flash and RAM maps + target-specific commands */
+	lpc546xx_add_flash(target, 0, 0x0, flash_size, 0x8000);
 
 	/*
 	 * Note: upper 96kiB is only usable after enabling the appropriate control
@@ -180,28 +204,10 @@ static bool lpc546xx_cmd_read_partid(target_s *const target, const int argc, con
 {
 	(void)argc;
 	(void)argv;
-	lpc_flash_s *const flash = (lpc_flash_s *)target->flash;
 	iap_result_s result;
-	if (lpc_iap_call(flash, &result, IAP_CMD_PARTID))
+	if (lpc_iap_call(target, &result, IAP_CMD_PARTID))
 		return false;
 	tc_printf(target, "PART ID: 0x%08" PRIx32 "\n", result.values[0]);
-	return true;
-}
-
-static bool lpc546xx_cmd_read_uid(target_s *const target, const int argc, const char **const argv)
-{
-	(void)argc;
-	(void)argv;
-	lpc_flash_s *const flash = (lpc_flash_s *)target->flash;
-	iap_result_s result = {0};
-	if (lpc_iap_call(flash, &result, IAP_CMD_READUID))
-		return false;
-	uint8_t uid[16U] = {0};
-	memcpy(&uid, result.values, sizeof(uid));
-	tc_printf(target, "UID: 0x");
-	for (uint32_t i = 0; i < sizeof(uid); ++i)
-		tc_printf(target, "%02x", uid[i]);
-	tc_printf(target, "\n");
 	return true;
 }
 
@@ -267,10 +273,10 @@ static bool lpc546xx_flash_init(target_s *const target)
 	/* Deal with WDT */
 	lpc546xx_wdt_set_period(target);
 
-	target_mem32_write32(target, LPC546XX_MAINCLKSELA, 0);  // 12MHz FRO
-	target_mem32_write32(target, LPC546XX_MAINCLKSELB, 0);  // Use MAINCLKSELA
-	target_mem32_write32(target, LPC546XX_AHBCLKDIV, 0);    // Divide by 1
-	target_mem32_write32(target, LPC546XX_FLASHCFG, 0x1aU); // Recommended default
+	target_mem32_write32(target, LPC546xx_MAINCLKSELA, 0);  // 12MHz FRO
+	target_mem32_write32(target, LPC546xx_MAINCLKSELB, 0);  // Use MAINCLKSELA
+	target_mem32_write32(target, LPC546xx_AHBCLKDIV, 0);    // Divide by 1
+	target_mem32_write32(target, LPC546xx_FLASHCFG, 0x1aU); // Recommended default
 	return true;
 }
 
@@ -284,21 +290,21 @@ static bool lpc546xx_flash_erase(target_flash_s *const flash, const target_addr_
 static void lpc546xx_wdt_set_period(target_s *const target)
 {
 	/* Check if WDT is on */
-	uint32_t wdt_mode = target_mem32_read32(target, LPC546XX_WDT_MODE);
+	uint32_t wdt_mode = target_mem32_read32(target, LPC546xx_WDT_MODE);
 
 	/* If WDT on, we can't disable it, but we may be able to set a long period */
-	if (wdt_mode && !(wdt_mode & LPC546XX_WDT_PROTECT))
-		target_mem32_write32(target, LPC546XX_WDT_CNT, LPC546XX_WDT_PERIOD_MAX);
+	if (wdt_mode && !(wdt_mode & LPC546xx_WDT_PROTECT))
+		target_mem32_write32(target, LPC546xx_WDT_CNT, LPC546xx_WDT_PERIOD_MAX);
 }
 
 static void lpc546xx_wdt_kick(target_s *const target)
 {
 	/* Check if WDT is on */
-	uint32_t wdt_mode = target_mem32_read32(target, LPC546XX_WDT_MODE);
+	uint32_t wdt_mode = target_mem32_read32(target, LPC546xx_WDT_MODE);
 
 	/* If WDT on, poke it to reset it */
 	if (wdt_mode) {
-		target_mem32_write32(target, LPC546XX_WDT_FEED, 0xaa);
-		target_mem32_write32(target, LPC546XX_WDT_FEED, 0xff);
+		target_mem32_write32(target, LPC546xx_WDT_FEED, 0xaa);
+		target_mem32_write32(target, LPC546xx_WDT_FEED, 0xff);
 	}
 }

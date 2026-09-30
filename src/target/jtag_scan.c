@@ -76,12 +76,6 @@ void jtag_add_device(const uint32_t dev_index, const jtag_dev_s *jtag_dev)
  */
 bool jtag_scan(void)
 {
-	/* Free the device list if any, and clean state ready */
-	target_list_free();
-
-	jtag_dev_count = 0;
-	memset(&jtag_devs, 0, sizeof(jtag_devs));
-
 	/*
 	 * Initialise the JTAG backend if it's not already
 	 * This will automatically do the SWD-to-JTAG sequence just in case we've got
@@ -99,6 +93,17 @@ bool jtag_scan(void)
 
 	/* Reset the chain ready */
 	jtag_proc.jtagtap_reset();
+	return jtag_discover();
+}
+
+bool jtag_discover(void)
+{
+	/* Free the device list if any, and clean state ready */
+	target_list_free();
+
+	jtag_dev_count = 0;
+	memset(jtag_devs, 0, sizeof(jtag_devs));
+
 	/* Start by reading out the ID Codes for all the devices on the chain */
 	if (!jtag_read_idcodes() ||
 		/* Otherwise, try and learn the chain IR lengths */
@@ -143,7 +148,8 @@ bool jtag_scan(void)
 #endif
 
 	/* Check for known devices and handle accordingly */
-	for (size_t device = 0; device < jtag_dev_count; device++) {
+	const size_t devices = jtag_dev_count;
+	for (size_t device = 0; device < devices; device++) {
 		for (size_t descr = 0; dev_descr[descr].idcode; descr++) {
 			if ((jtag_devs[device].jd_idcode & dev_descr[descr].idmask) == dev_descr[descr].idcode) {
 				/* Call handler to initialise/probe device further */
@@ -154,7 +160,7 @@ bool jtag_scan(void)
 		}
 	}
 
-	return jtag_dev_count > 0;
+	return devices > 0;
 }
 
 static bool jtag_read_idcodes(void)
@@ -297,24 +303,26 @@ static bool jtag_sanity_check(void)
 	/* Transition to Shift-DR */
 	DEBUG_INFO("Change state to Shift-DR\n");
 	jtagtap_shift_dr();
+	/* Preload entire DR chain of BYPASS with known 0 value */
+	jtag_proc.jtagtap_cycle(false, false, jtag_dev_count);
+
 	/* Count devices on chain */
 	size_t device = 0;
 	for (; device <= jtag_dev_count; ++device) {
-		jtag_proc.jtagtap_next(false, true);
-		// if (jtag_proc.jtagtap_next(false, true))
-			// break;
+		/* Read back the known 0's, shift out 1's, expect reading 1 after the chain loops */
+		if (jtag_proc.jtagtap_next(false, true))
+			break;
 		/* Configure the DR pre/post scan values */
 		jtag_devs[device].dr_prescan = device;
 		jtag_devs[device].dr_postscan = jtag_dev_count - device - 1U;
-		
 	}
 
 	/* If the device count gleaned above does not match the device count, error out */
-	// if (device != jtag_dev_count) {
-	// 	DEBUG_ERROR("jtag_scan: Sanity check failed: BYPASS dev count doesn't match IR scan\n");
-	// 	jtag_dev_count = 0;
-	// 	return false;
-	// }
+	if (device != jtag_dev_count) {
+		DEBUG_ERROR("jtag_scan: Sanity check failed: BYPASS dev count doesn't match IR scan\n");
+		jtag_dev_count = 0;
+		return false;
+	}
 
 	/* Everything's accounted for, so clean up */
 	DEBUG_INFO("Return to Run-Test/Idle\n");

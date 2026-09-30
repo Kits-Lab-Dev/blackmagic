@@ -1,8 +1,10 @@
 /*
  * This file is part of the Black Magic Debug project.
  *
- * Copyright (C) 2012 Gareth McMullin <gareth@blacksphere.co.nz>
  * Copyright (C) 2023 Vegard Storheil Eriksen <zyp@jvnv.net>
+ * Copyright (C) 2024-2025 1BitSquared <info@1bitsquared.com>
+ * Written by Vegard Storheil Eriksen <zyp@jvnv.net>
+ * Modified by Rachel Mant <git@dragonmux.network>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,47 +20,41 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+/*
+ * This file implements support for LPC40xx series devices, providing
+ * memory maps and Flash programming routines.
+ *
+ * References and details about the IAP variant used here:
+ * LPC408x/7x 32-bit ARM Cortex-M4 microcontroller, Product data sheet, Rev. 3
+ *   https://www.nxp.com/docs/en/data-sheet/LPC408X_7X.pdf
+ * and (behind their login wall):
+ * UM10562 - LPC408x/407x User manual, Rev. 3
+ *   https://www.nxp.com/webapp/Download?colCode=UM10562&location=null
+ */
+
 #include "general.h"
 #include "target.h"
 #include "target_internal.h"
-#include "cortex.h"
+#include "cortexm.h"
 #include "cortex_internal.h"
 #include "lpc_common.h"
 
-/*
- * For detailed documentation on how this code works and the IAP variant used here, see:
- * https://www.nxp.com/docs/en/data-sheet/LPC1759_58_56_54_52_51.pdf
- * and (behind their login wall):
- * https://cache.nxp.com/secured/assets/documents/en/user-guide/UM10360.pdf?fileExt=.pdf
- */
+#define LPC40xx_SRAM_SIZE_MIN 8192U // LPC40??
+#define LPC40xx_SRAM_IAP_SIZE 32U   // IAP routines use 32 bytes at top of ram
 
-#define IAP_PGM_CHUNKSIZE 4096U
+#define LPC40xx_IAP_ENTRYPOINT_LOCATION 0x1fff1ff1U
+#define LPC40xx_IAP_RAM_BASE            0x10000000U
 
-#define MIN_RAM_SIZE               8192U // LPC1751
-#define RAM_USAGE_FOR_IAP_ROUTINES 32U   // IAP routines use 32 bytes at top of ram
+#define LPC40xx_IAP_PGM_CHUNKSIZE 4096U
 
-#define IAP_ENTRYPOINT 0x1fff1ff1U
-#define IAP_RAM_BASE   0x10000000U
+#define LPC40xx_FLASH_NUM_SECTOR 30U
 
 #define LPC40xx_MEMMAP   UINT32_C(0x400fc040)
 #define LPC40xx_MPU_BASE UINT32_C(0xe000ed90)
 #define LPC40xx_MPU_CTRL (LPC40xx_MPU_BASE + 0x04U)
 
-#define FLASH_NUM_SECTOR 30U
-
-typedef struct iap_config {
-	uint32_t command;
-	uint32_t params[4];
-} iap_config_s;
-
-typedef struct BMD_ALIGN_DECL(4) iap_frame {
-	/* The start of an IAP stack frame is the opcode we set as the return point. */
-	uint16_t opcode;
-	/* There's then a hidden alignment field here, followed by the IAP call setup */
-	iap_config_s config;
-} iap_frame_s;
-
 typedef struct lpc40xx_priv {
+	lpc_priv_s base;
 	uint32_t mpu_ctrl_state;
 	uint32_t memmap_state;
 } lpc40xx_priv_s;
@@ -67,21 +63,19 @@ static void lpc40xx_extended_reset(target_s *target);
 static bool lpc40xx_enter_flash_mode(target_s *target);
 static bool lpc40xx_exit_flash_mode(target_s *target);
 static bool lpc40xx_mass_erase(target_s *target, platform_timeout_s *print_progess);
-iap_status_e lpc40xx_iap_call(
-	target_s *target, iap_result_s *result, platform_timeout_s *print_progess, iap_cmd_e cmd, ...);
 
-static void lpc40xx_add_flash(target_s *target, uint32_t addr, size_t len, size_t erasesize, uint8_t base_sector)
+static size_t lpc40xx_iap_params(iap_cmd_e cmd);
+
+static void lpc40xx_add_flash(
+	target_s *const target, const uint32_t addr, const size_t len, const size_t erasesize, const uint8_t base_sector)
 {
-	lpc_flash_s *flash = lpc_add_flash(target, addr, len, IAP_PGM_CHUNKSIZE);
-	flash->f.blocksize = erasesize;
+	lpc_flash_s *flash = lpc_add_flash(target, addr, len, LPC40xx_IAP_PGM_CHUNKSIZE);
+	flash->target_flash.blocksize = erasesize;
 	flash->base_sector = base_sector;
-	flash->f.write = lpc_flash_write_magic_vect;
-	flash->iap_entry = IAP_ENTRYPOINT;
-	flash->iap_ram = IAP_RAM_BASE;
-	flash->iap_msp = IAP_RAM_BASE + MIN_RAM_SIZE - RAM_USAGE_FOR_IAP_ROUTINES;
+	flash->target_flash.write = lpc_flash_write_magic_vect;
 }
 
-bool lpc40xx_probe(target_s *target)
+bool lpc40xx_probe(target_s *const target)
 {
 	if ((target->cpuid & CORTEX_CPUID_PARTNO_MASK) != CORTEX_M4 ||
 		(target->target_options & CORTEXM_TOPT_FLAVOUR_FLOAT) != 0)
@@ -95,18 +89,24 @@ bool lpc40xx_probe(target_s *target)
 	target_halt_request(target);
 
 	/* Allocate private storage so the flash mode entry/exit routines can save state */
-	lpc40xx_priv_s *priv = calloc(1, sizeof(*priv));
+	lpc40xx_priv_s *const priv = calloc(1, sizeof(*priv));
 	if (!priv) { /* calloc failed: heap exhaustion */
 		DEBUG_ERROR("calloc: failed in %s\n", __func__);
 		return false;
 	}
 	target->target_storage = priv;
 
+	/* Set the structure up for this target */
+	priv->base.iap_params = lpc40xx_iap_params;
+	priv->base.iap_entry = LPC40xx_IAP_ENTRYPOINT_LOCATION;
+	priv->base.iap_ram = LPC40xx_IAP_RAM_BASE;
+	priv->base.iap_msp = LPC40xx_IAP_RAM_BASE + LPC40xx_SRAM_SIZE_MIN;
+
 	/* Prepare Flash mode */
 	lpc40xx_enter_flash_mode(target);
 	/* Read the Part ID */
 	iap_result_s result;
-	lpc40xx_iap_call(target, &result, NULL, IAP_CMD_PARTID);
+	lpc_iap_call(target, &result, IAP_CMD_PARTID);
 	/* Transition back to normal mode and resume the target */
 	lpc40xx_exit_flash_mode(target);
 	target_halt_resume(target, false);
@@ -166,19 +166,20 @@ static bool lpc40xx_exit_flash_mode(target_s *const target)
 
 static bool lpc40xx_mass_erase(target_s *const target, platform_timeout_s *const print_progess)
 {
+	(void)print_progess;
 	iap_result_s result;
 
-	if (lpc40xx_iap_call(target, &result, print_progess, IAP_CMD_PREPARE, 0, FLASH_NUM_SECTOR - 1U)) {
+	if (lpc_iap_call(target, &result, IAP_CMD_PREPARE, 0, LPC40xx_FLASH_NUM_SECTOR - 1U)) {
 		DEBUG_ERROR("%s: prepare failed %" PRIu32 "\n", __func__, result.return_code);
 		return false;
 	}
 
-	if (lpc40xx_iap_call(target, &result, print_progess, IAP_CMD_ERASE, 0, FLASH_NUM_SECTOR - 1U, CPU_CLK_KHZ)) {
+	if (lpc_iap_call(target, &result, IAP_CMD_ERASE, 0, LPC40xx_FLASH_NUM_SECTOR - 1U, CPU_CLK_KHZ)) {
 		DEBUG_ERROR("%s: erase failed %" PRIu32 "\n", __func__, result.return_code);
 		return false;
 	}
 
-	if (lpc40xx_iap_call(target, &result, print_progess, IAP_CMD_BLANKCHECK, 0, FLASH_NUM_SECTOR - 1U)) {
+	if (lpc_iap_call(target, &result, IAP_CMD_BLANKCHECK, 0, LPC40xx_FLASH_NUM_SECTOR - 1U)) {
 		DEBUG_ERROR("%s: blankcheck failed %" PRIu32 "\n", __func__, result.return_code);
 		return false;
 	}
@@ -190,7 +191,7 @@ static bool lpc40xx_mass_erase(target_s *const target, platform_timeout_s *const
  * Target has been reset, make sure to remap the boot ROM
  * from 0x00000000 leaving the user flash visible
  */
-static void lpc40xx_extended_reset(target_s *target)
+static void lpc40xx_extended_reset(target_s *const target)
 {
 	/*
 	 * Transition the memory map to user mode (if it wasn't already) to ensure
@@ -211,60 +212,4 @@ static size_t lpc40xx_iap_params(const iap_cmd_e cmd)
 	default:
 		return 0U;
 	}
-}
-
-iap_status_e lpc40xx_iap_call(
-	target_s *const target, iap_result_s *const result, platform_timeout_s *const print_progess, iap_cmd_e cmd, ...)
-{
-	/* Set up our IAP frame with the break opcode and command to run */
-	iap_frame_s frame = {
-		.opcode = CORTEX_THUMB_BREAKPOINT,
-		{.command = cmd},
-	};
-
-	/* Fill out the remainder of the parameters */
-	const size_t params_count = lpc40xx_iap_params(cmd);
-	va_list params;
-	va_start(params, cmd);
-	for (size_t i = 0; i < params_count; ++i)
-		frame.config.params[i] = va_arg(params, uint32_t);
-	va_end(params);
-	for (size_t i = params_count; i < 4U; ++i)
-		frame.config.params[i] = 0U;
-
-	/* Copy the structure to RAM */
-	target_mem32_write(target, IAP_RAM_BASE, &frame, sizeof(iap_frame_s));
-	const uint32_t iap_params_addr = IAP_RAM_BASE + offsetof(iap_frame_s, config);
-
-	/* Set up for the call to the IAP ROM */
-	uint32_t regs[CORTEXM_GENERAL_REG_COUNT];
-	target_regs_read(target, regs);
-	/* Point r0 to the start of the config block */
-	regs[0] = iap_params_addr;
-	/* And r1 to the same so we re-use the same memory for the results */
-	regs[1U] = iap_params_addr;
-	/* Set the top of stack to the top of the RAM block we're using */
-	regs[CORTEX_REG_MSP] = IAP_RAM_BASE + MIN_RAM_SIZE;
-	/* Point the return address to our breakpoint opcode (thumb mode) */
-	regs[CORTEX_REG_LR] = IAP_RAM_BASE | 1U;
-	/* And set the program counter to the IAP ROM entrypoint */
-	regs[CORTEX_REG_PC] = IAP_ENTRYPOINT;
-	target_regs_write(target, regs);
-
-	platform_timeout_s timeout;
-	platform_timeout_set(&timeout, 500U);
-	/* Start the target and wait for it to halt again */
-	target_halt_resume(target, false);
-	while (!target_halt_poll(target, NULL)) {
-		if (print_progess)
-			target_print_progress(print_progess);
-		else if (cmd == IAP_CMD_PARTID && platform_timeout_is_expired(&timeout)) {
-			target_halt_request(target);
-			return IAP_STATUS_INVALID_COMMAND;
-		}
-	}
-
-	/* Copy back just the results */
-	target_mem32_read(target, result, iap_params_addr, sizeof(iap_result_s));
-	return result->return_code;
 }
