@@ -31,16 +31,14 @@
 subproject('winc1500')
 winc1500 = dependency('winc1500')
 
-probe_ctxlink_includes = include_directories(
-	'.'
-)
+probe_ctxlink_includes = include_directories('.')
 
 probe_ctxlink_sources = files(
-	'platform.c',
-	'ctxlink_gdb_if.c',
 	'WiFi_Server.c',
 	'ctxLink_mode_led.c',
-	'winc1500_driver_stub_api.c'
+	'ctxlink_gdb_if.c',
+	'platform.c',
+	'winc1500_driver_stub_api.c',
 )
 
 probe_ctxlink_args = [
@@ -48,6 +46,7 @@ probe_ctxlink_args = [
 ]
 
 trace_protocol = get_option('trace_protocol')
+probe_ctxlink_args += [f'-DCTXLINK']
 probe_ctxlink_args += [f'-DSWO_ENCODING=@trace_protocol@']
 probe_ctxlink_dependencies = [platform_stm32_swo]
 if trace_protocol in ['1', '3']
