@@ -22,6 +22,7 @@
 #include "morse.h"
 
 #include <libopencm3/stm32/f4/rcc.h>
+#include <libopencm3/cm3/cortex.h>
 #include <libopencm3/cm3/scb.h>
 #include <libopencm3/cm3/nvic.h>
 #include <libopencm3/stm32/exti.h>
@@ -91,10 +92,10 @@ struct sockaddr_in swo_trace_addr = {0};
 static volatile SOCKET socket_parameter = 0;
 
 //
-// Flag used to run the MODE LED state machine
+// Flag used to run the additional app tasks
 //
-static bool run_mode_led_task = false; ///< True to run mode LED task
-static uint32_t press_timer = 0;       ///< The press timer
+static bool run_app_tasks = false; ///< True to run additional app tasks
+static uint32_t press_timer = 0;   ///< The press timer
 
 static bool driver_init_complete = false;     ///< True to driver initialize complete
 static bool g_wifi_connected = false;         ///< True if WiFi connected
@@ -114,15 +115,32 @@ static uint8_t local_uart_debug_buffer[UART_DEBUG_INPUT_BUFFER_SIZE] = {0}; ///<
 static SOCKET uart_debug_server_socket = SOCK_ERR_INVALID;
 static SOCKET uart_debug_client_socket = SOCK_ERR_INVALID;
 static bool uart_debug_client_connected = false;
-static bool user_configured_uart = false;
 static bool uart_debug_server_is_running = false;
-static bool new_uart_debug_client_conncted = false;
+static bool new_uart_debug_client_connected = false;
+
+/**
+ * @brief Control structure for UART debug send operations
+ * 
+ * This structure is used in the aggregation of the target data
+ * to be sent to the connected client.
+ */
+typedef struct {
+	SOCKET sock;        // The socket for sending the data
+	size_t count;       // The number of bytes in the buffer
+	uint8_t tick_count; // The timing tick counter (in ms)
+	uint8_t buffer[64]; // The aggregation buffer
+} uart_debug_send_control_s;
+
+#define AGGREGATION_TICK_COUNT 50U // Expressed in ms
+#define AGGREGATION_THRESHOLD  20U // The minimum number of bytes that triggers a send
+
+static uart_debug_send_control_s uart_debug_send_control = {0};
 
 static SOCKET swo_trace_server_socket = SOCK_ERR_INVALID;
 static SOCKET swo_trace_client_socket = SOCK_ERR_INVALID;
 static bool swo_trace_client_connected = false;
 static bool swo_trace_server_is_running = false;
-static bool new_swo_trace_client_conncted = false;
+static bool new_swo_trace_client_connected = false;
 
 tstrM2MConnInfo conn_info;
 
@@ -130,13 +148,6 @@ tstrM2MConnInfo conn_info;
 static uint8_t local_swo_trace_buffer[SWO_TRACE_INPUT_BUFFER_SIZE] = {0}; ///< The local buffer[ input buffer size]
 
 #define WPS_LOCAL_TIMEOUT 30 // Timeout value in seconds
-
-//
-// Sign-on message for new UART data clients
-//
-static const char uart_client_signon[] = "\r\nctxLink UART connection.\r\nPlease enter the UART setup as baud, bits, "
-										 "parity, "
-										 "stop.\r\ne.g. 38400,8,N,1\r\n\r\n";
 
 typedef enum wi_fi_app_states {
 	app_state_wait_for_driver_init,          ///< 0
@@ -268,7 +279,7 @@ void tim2_isr(void)
 		timer_set_oc_value(TIM2, TIM_OC1, new_time);
 		//timer_set_counter (TIM2, 0);
 		m2m_TMR_ISR();
-		run_mode_led_task = true;
+		run_app_tasks = true;
 		press_timer++;
 	}
 	/*
@@ -512,7 +523,6 @@ void wifi_setup_swo_trace_server(void)
 		close(uart_debug_client_socket);
 		uart_debug_client_socket = SOCK_ERR_INVALID; // Mark socket invalid
 		uart_debug_client_connected = false;         // No longer connected
-		user_configured_uart = false;
 	}
 	//
 	// If the UART server is up, close it timeDown
@@ -841,7 +851,6 @@ void process_recv_error(SOCKET socket, t_socketRecv *recv_data, uint8_t msg_type
 			close(uart_debug_client_socket);
 			uart_debug_client_socket = SOCK_ERR_INVALID; // Mark socket invalid
 			uart_debug_client_connected = false;         // No longer connected
-			user_configured_uart = false;
 		} else if (socket == swo_trace_client_socket) {
 			close(swo_trace_client_socket);
 			swo_trace_client_socket = SOCK_ERR_INVALID; // Mark socket invalid
@@ -933,19 +942,13 @@ static void app_socket_callback(SOCKET sock, uint8_t msg_type, void *msg)
 			handle_socket_accept_event(
 				accept_data, &gdb_client_socket, &gdb_client_connected, &new_gdb_client_connected, msg_type);
 		else if (sock == uart_debug_server_socket) {
-			//
-			// Disable any active UART setup by killing the baud rate
-			//
-			usart_set_baudrate(USBUSART, 0);
 			handle_socket_accept_event(accept_data, &uart_debug_client_socket, &uart_debug_client_connected,
-				&new_uart_debug_client_conncted, msg_type);
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
-			send(uart_debug_client_socket, (void *)&uart_client_signon[0], strlen(&uart_client_signon[0]), 0);
-#pragma GCC diagnostic pop
+				&new_uart_debug_client_connected, msg_type);
+			memset(&uart_debug_send_control, 0x00, sizeof(uart_debug_send_control));
+			uart_debug_send_control.sock = uart_debug_client_socket;
 		} else if (sock == swo_trace_server_socket)
 			handle_socket_accept_event(accept_data, &swo_trace_client_socket, &swo_trace_client_connected,
-				&new_swo_trace_client_conncted, msg_type);
+				&new_swo_trace_client_connected, msg_type);
 		else {
 			//
 			// Unknown server ... TODO
@@ -987,24 +990,13 @@ static void app_socket_callback(SOCKET sock, uint8_t msg_type, void *msg)
 				process_recv_error(sock, recv_data, msg_type);
 		} else if (sock == uart_debug_client_socket) {
 			if (recv_data->bufSize > 0) {
-				if (!user_configured_uart) {
-					if (!platform_configure_uart((char *)&local_uart_debug_buffer[0]))
-						//
-						// Setup failed, tell user
-						//
-						send(uart_debug_client_socket, "Syntax error in setup string\r\n",
-							strlen("Syntax error in setup string\r\n"), 0);
-					else
-						user_configured_uart = true;
-				} else {
-					//
-					// Forward data to target MCU
-					//
-					gpio_set(LED_PORT_UART, LED_UART);
-					for (int i = 0; i < recv_data->bufSize; i++)
-						usart_send_blocking(USBUSART, local_uart_debug_buffer[i]);
-					gpio_clear(LED_PORT_UART, LED_UART);
-				}
+				//
+				// Forward data to target MCU
+				//
+				gpio_set(LED_PORT_UART, LED_UART);
+				for (int i = 0; i < recv_data->bufSize; i++)
+					usart_send_blocking(USBUSART, local_uart_debug_buffer[i]);
+				gpio_clear(LED_PORT_UART, LED_UART);
 				memset(&local_uart_debug_buffer[0], 0x00, sizeof(local_uart_debug_buffer));
 				//
 				// Setup to receive future data
@@ -1099,7 +1091,7 @@ bool is_gdb_client_connected(void)
 
 bool is_uart_client_connected(void)
 {
-	return user_configured_uart;
+	return uart_debug_client_connected;
 }
 
 bool is_swo_trace_client_connected(void)
@@ -1419,12 +1411,12 @@ void app_task(void)
 			//
 			recv(gdb_client_socket, &local_buffer[0], INPUT_BUFFER_SIZE, 0);
 		}
-		if (new_uart_debug_client_conncted) {
-			new_uart_debug_client_conncted = false;
+		if (new_uart_debug_client_connected) {
+			new_uart_debug_client_connected = false;
 			recv(uart_debug_client_socket, &local_uart_debug_buffer[0], UART_DEBUG_INPUT_BUFFER_SIZE, 0);
 		}
-		if (new_swo_trace_client_conncted) {
-			new_swo_trace_client_conncted = false;
+		if (new_swo_trace_client_connected) {
+			new_swo_trace_client_connected = false;
 			recv(swo_trace_client_socket, &local_swo_trace_buffer[0], SWO_TRACE_INPUT_BUFFER_SIZE, 0);
 		}
 		break;
@@ -1437,15 +1429,44 @@ void app_task(void)
 	//
 	// Check for swo trace data
 	//
-	// TODO Restore this when TRACESWO is implemented
+	// TODO Restore this when SWO is implemented
 	// trace_send_data();
 	//
 	// Run the mode led task?
 	//
 	timer_disable_irq(TIM2, TIM_DIER_CC1IE);
-	if (run_mode_led_task) {
-		run_mode_led_task = false;
-		mode_led_task();
+	if (run_app_tasks) {
+		run_app_tasks = false;
+		mode_led_task(); // Run the mode led state machine
+		//
+		// Check if a uart client is connected
+		//
+		if (is_uart_client_connected()) {
+			uart_debug_send_control.tick_count++;
+			//
+			// Protect the gathering of the uart debug control data from interrupts
+			//
+			const uint32_t interrupt_state = cm_mask_interrupts(1U);
+			uint32_t local_count = uart_debug_send_control.count;
+			uint8_t buffer[sizeof(uart_debug_send_control.buffer)];
+			//
+			// Check if there is enough data in the output buffer or if the timer has expired
+			//
+			if (local_count != 0 &&
+				(local_count > AGGREGATION_THRESHOLD || uart_debug_send_control.tick_count >= AGGREGATION_TICK_COUNT)) {
+				memcpy(buffer, uart_debug_send_control.buffer, sizeof(uart_debug_send_control.buffer));
+				uart_debug_send_control.count = 0;
+				uart_debug_send_control.tick_count = 0;
+			} else
+				local_count = 0;
+
+			cm_mask_interrupts(interrupt_state); // Restore the previous interrupt state
+			//
+			// Send the data to the client
+			//
+			if (local_count != 0)
+				send(uart_debug_send_control.sock, &buffer[0], local_count, 0);
+		}
 	}
 	timer_enable_irq(TIM2, TIM_DIER_CC1IE);
 	/*
@@ -1587,9 +1608,10 @@ void do_gdb_send(void)
 
 void do_uart_debug_send(void)
 {
-	send(uart_debug_client_socket, &(uart_debug_send_queue[uart_debug_send_queue_out].packet[0]),
-		uart_debug_send_queue[uart_debug_send_queue_out].len, 0);
 	m2mStub_EintDisable();
+	memcpy(&uart_debug_send_control.buffer[uart_debug_send_control.count],
+		uart_debug_send_queue[uart_debug_send_queue_out].packet, uart_debug_send_queue[uart_debug_send_queue_out].len);
+	uart_debug_send_control.count += uart_debug_send_queue[uart_debug_send_queue_out].len;
 	uart_debug_send_queue_out = (uart_debug_send_queue_out + 1) % SEND_QUEUE_SIZE;
 	uart_debug_send_queue_length -= 1;
 	m2mStub_EintEnable();
@@ -1601,7 +1623,7 @@ void do_awo_trace_send(void)
 		swo_trace_send_queue[swo_trace_send_queue_out].len, 0);
 }
 
-void send_uart_data(uint8_t *buffer, uint8_t length)
+uint16_t send_uart_data(const void *buffer, uint8_t length)
 {
 	m2mStub_EintDisable();
 	memcpy(uart_debug_send_queue[uart_debug_send_queue_in].packet, buffer, length);
@@ -1610,6 +1632,7 @@ void send_uart_data(uint8_t *buffer, uint8_t length)
 	uart_debug_send_queue_length += 1;
 	m2mStub_EintEnable();
 	do_uart_debug_send();
+	return length;
 }
 
 void send_swo_trace_data(uint8_t *buffer, uint8_t length)
@@ -1629,7 +1652,7 @@ void send_swo_trace_data(uint8_t *buffer, uint8_t length)
 void wifi_gdb_putchar(const uint8_t ch, const bool flush)
 {
 	send_buffer[send_count++] = ch;
-	if (flush || send_count >= sizeof(send_buffer))
+	if (flush || send_count == sizeof(send_buffer))
 		wifi_gdb_flush(flush);
 }
 
@@ -1641,13 +1664,9 @@ void wifi_gdb_flush(const bool force)
 	if (send_count == 0U)
 		return;
 
-	// TODO is this check required now, looks like a debug test left in place?
-	if (send_count <= 0U)
-		DEBUG_WARN("WiFi_putchar bad count\r\n");
-	DEBUG_WARN("Wifi_putchar %c\r\n", send_buffer[0]);
-	send(gdb_client_socket, &send_buffer[0], send_count, 0);
+	DEBUG_WARN("Wifi_putchar %c\n", send_buffer[0]);
+	send(gdb_client_socket, send_buffer, send_count, 0);
 
 	/* Reset the buffer */
 	send_count = 0U;
-	memset(&send_buffer[0], 0x00, sizeof(send_buffer));
 }

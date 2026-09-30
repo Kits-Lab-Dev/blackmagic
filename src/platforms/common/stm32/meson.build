@@ -1,7 +1,8 @@
 # This file is part of the Black Magic Debug project.
 #
-# Copyright (C) 2023 1BitSquared <info@1bitsquared.com>
+# Copyright (C) 2023-2025 1BitSquared <info@1bitsquared.com>
 # Written by Rafael Silva <perigoso@riseup.net>
+# Modified by Rachel Mant <git@dragonmux.network>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -232,4 +233,35 @@ platform_stm32l4 = declare_dependency(
 	compile_args: platform_stm32l4_args,
 	link_args: platform_stm32l4_link_args,
 	dependencies: [platform_stm32_common, dependency('opencm3_stm32l4')],
+)
+
+## STM32U5 Platform
+## ________________
+
+platform_stm32u5_dfu_sources = files('dfu_u5.c')
+
+platform_stm32u5_args = [
+	'-mcpu=cortex-m33',
+	'-mfloat-abi=hard',
+	'-mfpu=fpv5-sp-d16',
+	'-DSTM32U5',
+]
+
+platform_stm32u5_link_args = [
+	'-mcpu=cortex-m33',
+	'-mfloat-abi=hard',
+	'-mfpu=fpv5-sp-d16',
+]
+
+platform_stm32u5 = declare_dependency(
+	compile_args: platform_stm32u5_args,
+	link_args: platform_stm32u5_link_args,
+	dependencies: [platform_stm32_common, dependency('opencm3_stm32u5')],
+)
+
+platform_stm32u5_dfu = declare_dependency(
+	sources: platform_stm32u5_dfu_sources,
+	compile_args: platform_stm32u5_args,
+	link_args: platform_stm32u5_link_args,
+	dependencies: [platform_stm32_dfu_common, dependency('opencm3_stm32u5')],
 )
