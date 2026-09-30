@@ -82,19 +82,32 @@
 #define TARGET_V_PIN GPIO0
 #define TARGET_V_CH 5                                       
 
-#define SWDIO_MODE_FLOAT()                                 \
-	do                                                     \
-	{                                              \
-		gpio_mode_setup(SWDIO_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE, SWDIO_PIN); \
-		gpio_clear(TMS_DIR_PORT, TMS_DIR_PIN);         \
+/*
+ * U_A (SN74LVC2T45) carries SWDIO on one channel and JTDI on the other, sharing a single DIR pin.
+ * Clearing TMS_DIR turns both channels around, so the JTDI channel starts driving TDI_PIN from the
+ * target side. TDI_PIN must therefore be an input whenever TMS_DIR is low, or the port fights the
+ * translator. JTAG is unaffected: TMS_DIR stays high there and TDI_PIN is restored as an output.
+ */
+#define SWDIO_MODE_FLOAT()                                                                  \
+	do                                                                                      \
+	{                                                                                       \
+		gpio_mode_setup(SWDIO_PORT, GPIO_MODE_INPUT, GPIO_PUPD_PULLUP, SWDIO_PIN);          \
+		gpio_mode_setup(TDI_PORT, GPIO_MODE_INPUT, GPIO_PUPD_NONE, TDI_PIN);                \
+		gpio_clear(TMS_DIR_PORT, TMS_DIR_PIN);                                              \
 	} while (0)
 
-#define SWDIO_MODE_DRIVE()                                  \
-	do                                                      \
-	{                                                         \
-		gpio_mode_setup(SWDIO_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, SWDIO_PIN); \
-		gpio_set_output_options(SWDIO_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, SWDIO_PIN); \
-		gpio_set(TMS_DIR_PORT, TMS_DIR_PIN);                \
+/*
+ * Raise TMS_DIR first so the shared JTDI channel stops driving TDI_PIN, then reclaim both pins as
+ * outputs. Leaving TDI_PIN floating here would starve the translator A-side input.
+ */
+#define SWDIO_MODE_DRIVE()                                                                  \
+	do                                                                                      \
+	{                                                                                       \
+		gpio_set(TMS_DIR_PORT, TMS_DIR_PIN);                                                \
+		gpio_mode_setup(SWDIO_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, SWDIO_PIN);           \
+		gpio_set_output_options(SWDIO_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, SWDIO_PIN);\
+		gpio_mode_setup(TDI_PORT, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, TDI_PIN);               \
+		gpio_set_output_options(TDI_PORT, GPIO_OTYPE_PP, GPIO_OSPEED_VERYHIGH, TDI_PIN);    \
 	} while (0)
 
 #define TMS_SET_MODE() 
@@ -158,8 +171,8 @@ extern const struct _usbd_driver l432_usb_driver;
 #define SWO_UART USART1
 #define SWO_UART_DR USART1_RDR
 #define SWO_UART_CLK RCC_USART1
-#define SWO_UART_PORT GPIOA
-#define SWO_UART_RX_PIN GPIO10
+#define SWO_UART_PORT GPIOB
+#define SWO_UART_RX_PIN GPIO7
 #define SWO_UART_PIN_AF GPIO_AF7
 
 /* This DMA channel is set by the USART in use */
