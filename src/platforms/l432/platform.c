@@ -98,12 +98,20 @@ uint32_t platform_target_voltage_sense(void)
 	return (value * 99U) / 8191U;
 }
 
+#define BOOTMAGIC0 UINT32_C(0xb007da7a)
+#define BOOTMAGIC1 UINT32_C(0xbaadfeed)
+
+/* Survives the system reset: .noinit is not touched by the startup code */
+static volatile uint32_t magic[2] __attribute__((section(".noinit")));
+
+/*
+ * Write the bootloader flag and reboot, platform_init() then enters the ST system
+ * bootloader (USB DFU). There is no BMD bootloader on this board.
+ */
 void platform_request_boot(void)
 {
-	//FIXME
-	//вход boot подтянуть к питанию через встроенный резистор
-
-
+	magic[0] = BOOTMAGIC0;
+	magic[1] = BOOTMAGIC1;
 	scb_reset_system();
 }
 
@@ -111,6 +119,21 @@ void platform_request_boot(void)
 
 void platform_init(void)
 {
+	rcc_periph_clock_enable(RCC_SYSCFG);
+	if (magic[0] == BOOTMAGIC0 && magic[1] == BOOTMAGIC1) {
+		magic[0] = 0;
+		magic[1] = 0;
+		/*
+		 * Jump to the built in bootloader by mapping System flash at 0 and resetting the core only.
+		 * As we just came out of reset, no other deinit is needed.
+		 */
+		SYSCFG_MEMRMP = (SYSCFG_MEMRMP & ~SYSCFG_MEMRMP_MEM_MODE_MASK) | SYSCFG_MEMRMP_MEM_MODE_SYSTEM;
+		scb_reset_core();
+	}
+	/* The bootloader may start us with System flash still mapped at 0 */
+	if ((SYSCFG_MEMRMP & SYSCFG_MEMRMP_MEM_MODE_MASK) == SYSCFG_MEMRMP_MEM_MODE_SYSTEM)
+		SYSCFG_MEMRMP &= ~SYSCFG_MEMRMP_MEM_MODE_MASK;
+
 	SCB_VTOR = (uintptr_t)&vector_table;
 
 	rcc_clock_setup_pll(&rcc_hsi16_configs[RCC_CLOCK_VRANGE1_80MHZ]);
