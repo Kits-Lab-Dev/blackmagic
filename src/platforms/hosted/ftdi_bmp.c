@@ -188,13 +188,6 @@ const cable_desc_s cable_desc[] = {
 		.description = "FTDISWD",
 	},
 	{
-		.vendor = 0x15b1U,
-		.product = 0x0003U,
-		.interface = INTERFACE_A,
-		.init.dirs[0] = PIN5,
-		.name = "olimex",
-	},
-	{
 		/*
 		 * Buffered connection from FTDI to JTAG/SWD.
 		 * TCK and TMS are not independently switchable.
@@ -278,15 +271,17 @@ const cable_desc_s cable_desc[] = {
 	{
 		/*
 		 * http://www.olimex.com/dev/pdf/ARM-USB-OCD.pdf.
-		 * DBUS 4 global enables JTAG Buffer.
-		 * TCK and TMS are not independently switchable.
-		 * => SWD is not possible.
+		 * https://www.olimex.com/Products/ARM/JTAG/_resources/ARM-USB-OCD_and_OCD_H_manual.pdf
+		 * DBUS 4 (active low) enables JTAG output buffers.
+		 * TCK and TMS are not independently switchable. => SWD is not possible.
+		 * Because of strstr() matching HS devices against FS cable-desc (full prefix), HS cable-desc should come first.
 		 */
 		.vendor = 0x15baU,
 		.product = 0x002bU,
 		.interface = INTERFACE_A,
 		.init.data = {0, PIN3 | PIN1 | PIN0},
 		.init.dirs = {PIN4, PIN4 | PIN3 | PIN1 | PIN0},
+		.description = "Olimex OpenOCD JTAG ARM-USB-OCD-H",
 		.name = "arm-usb-ocd-h",
 	},
 	{
@@ -362,10 +357,11 @@ const cable_desc_s cable_desc[] = {
 	{
 		/*
 		 * https://www.olimex.com/Products/ARM/JTAG/ARM-USB-TINY-H/
+		 * https://www.olimex.com/Products/ARM/JTAG/_resources/ARM-USB-TINY_and_TINY_H_manual.pdf
 		 *
 		 * schematics not available
 		 */
-		.vendor = 0x15b1U,
+		.vendor = 0x15baU,
 		.product = 0x002aU,
 		.interface = INTERFACE_A,
 		.init.data = {PIN4, PIN2 | PIN4},
@@ -376,6 +372,32 @@ const cable_desc_s cable_desc[] = {
 		.deassert_nrst.dirs[1] = ~PIN2,
 		.name = "arm-usb-tiny-h",
 		.description = "Olimex OpenOCD JTAG ARM-USB-TINY-H",
+	},
+	{
+		/*
+		 * https://www.olimex.com/Products/ARM/JTAG/_resources/ARM-USB-TINY_and_TINY_H_manual.pdf
+		 * JTAG-only, unbuffered.
+		 */
+		.vendor = 0x15baU,
+		.product = 0x0004U,
+		.interface = INTERFACE_A,
+		.description = "Olimex OpenOCD JTAG TINY",
+		.name = "arm-usb-tiny",
+	},
+	{
+		/*
+		 * https://www.olimex.com/Products/ARM/JTAG/_resources/ARM-USB-OCD.pdf
+		 * https://www.olimex.com/Products/ARM/JTAG/_resources/ARM-USB-OCD_and_OCD_H_manual.pdf
+		 * DBUS 4 (active-low) enables output buffers.
+		 * DBUS 6 is TSRST in (sense), CBUS 1 is TSRST out.
+		 * CBUS 0 is TRST, CBUS 2 is TRST buffer-enable. CBUS 3 is red LED.
+		 */
+		.vendor = 0x15baU,
+		.product = 0x0003U,
+		.interface = INTERFACE_A,
+		.init.dirs[0] = PIN4,
+		.description = "Olimex OpenOCD JTAG",
+		.name = "arm-usb-ocd",
 	},
 	{0},
 };
@@ -416,8 +438,10 @@ bool ftdi_lookup_cable_by_product(bmda_cli_options_s *cl_opts, const char *produ
 		return true;
 
 	for (const cable_desc_s *cable = &cable_desc[0]; cable->vendor; ++cable) {
+		/* USB Product string should contain partial BMD description as substring */
 		if (cable->description && strstr(product, cable->description) != 0) {
 			cl_opts->opt_cable = cable->name;
+			DEBUG_INFO("%s matched %s: %s\n", __func__, cable->name, cable->description);
 			return true;
 		}
 	}

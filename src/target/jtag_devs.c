@@ -24,6 +24,7 @@
 #include "jtag_scan.h"
 #include "adiv5.h"
 #include "riscv_debug.h"
+#include "icepick.h"
 #include "jtag_devs.h"
 
 const jtag_dev_descr_s dev_descr[] = {
@@ -409,7 +410,7 @@ const jtag_dev_descr_s dev_descr[] = {
 		.idcode = 0x0000563dU,
 		.idmask = 0x0fffffffU,
 #if ENABLE_DEBUG == 1
-		.descr = "RISC-V debug v0.13.",
+		.descr = "Andes Tech RISC-V DTM.",
 #endif
 		.handler = riscv_jtag_dtm_handler,
 	},
@@ -421,14 +422,23 @@ const jtag_dev_descr_s dev_descr[] = {
 #endif
 		.handler = riscv_jtag_dtm_handler,
 	},
+	{
+		.idcode = 0x00307a6dU,
+		.idmask = 0x0fffffffU,
+#if ENABLE_DEBUG == 1
+		.descr = "Nuclei Systems RISC-V DTM.",
 #endif
-#if defined(CONFIG_CORTEXAR) // && defined(ENABLE_SITARA)
+		.handler = riscv_jtag_dtm_handler,
+	},
+#endif // CONFIG_RISCV
+#if defined(CONFIG_CORTEXAR) && defined(CONFIG_TI_ICEPICK)
 	{
 		.idcode = 0x0b90002fU,
 		.idmask = 0x0ff00fffU,
 #if ENABLE_DEBUG == 1
 		.descr = "TI ICEPick.",
 #endif
+		.handler = icepick_router_handler,
 	},
 #endif
 #if ENABLE_DEBUG == 1

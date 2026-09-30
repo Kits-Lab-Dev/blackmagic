@@ -40,8 +40,7 @@ static void jlink_jtag_tms_seq(uint32_t tms_states, size_t clock_cycles);
 static void jlink_jtag_tdi_tdo_seq(uint8_t *data_out, bool final_tms, const uint8_t *data_in, size_t clock_cycles);
 static void jlink_jtag_tdi_seq(bool final_tms, const uint8_t *data_in, size_t clock_cycles);
 static bool jlink_jtag_next(bool tms, bool tdi);
-
-static const uint8_t jlink_switch_to_jtag_seq[9U] = {0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0x3cU, 0xe7U};
+static void jlink_jtag_cycle(bool tms, bool tdi, size_t clock_cycles);
 
 bool jlink_jtag_init(void)
 {
@@ -55,7 +54,10 @@ bool jlink_jtag_init(void)
 
 	/* Ensure we're in JTAG mode */
 	DEBUG_PROBE("%s: Switch to JTAG\n", __func__);
-	if (!jlink_transfer(sizeof(jlink_switch_to_jtag_seq) * 8U, jlink_switch_to_jtag_seq, NULL, NULL)) {
+	jlink_jtag_cycle(true, false, 56U - 5U);
+	uint8_t tms_swd_to_jtag_seq[2] = {0x3cU, 0xe7U};
+	bool res = jlink_transfer(16U, tms_swd_to_jtag_seq, NULL, NULL);
+	if (!res) {
 		DEBUG_ERROR("Switch to JTAG failed\n");
 		return false;
 	}
@@ -66,6 +68,7 @@ bool jlink_jtag_init(void)
 	jtag_proc.jtagtap_tms_seq = jlink_jtag_tms_seq;
 	jtag_proc.jtagtap_tdi_tdo_seq = jlink_jtag_tdi_tdo_seq;
 	jtag_proc.jtagtap_tdi_seq = jlink_jtag_tdi_seq;
+	jtag_proc.jtagtap_cycle = jlink_jtag_cycle;
 	return true;
 }
 
@@ -116,4 +119,25 @@ static bool jlink_jtag_next(bool tms, bool tdi)
 	if (!result)
 		raise_exception(EXCEPTION_ERROR, "jtagtap_next failed");
 	return tdo;
+}
+
+static void jlink_jtag_cycle(const bool tms, const bool tdi, const size_t clock_cycles)
+{
+	uint8_t tms_buf[512] = {0};
+	uint8_t tdi_buf[512] = {0};
+	if (clock_cycles > 4096U)
+		return;
+	const size_t clock_bytes = clock_cycles >> 3U;
+	memset(tms_buf, tms ? 0xffU : 0U, clock_bytes);
+	memset(tdi_buf, tdi ? 0xffU : 0U, clock_bytes);
+	const size_t clock_bits = clock_cycles & 7U;
+	if (clock_bits) {
+		const uint8_t ones = (1U << clock_bits) - 1U;
+		tms_buf[clock_bytes] = tms ? ones : 0U;
+		tdi_buf[clock_bytes] = tdi ? ones : 0U;
+	}
+	DEBUG_PROBE("jtagtap_cycle tms=%u tdi=%u, clock cycles: %zu\n", tms, tdi, clock_cycles);
+	const bool result = jlink_transfer(clock_cycles, tms_buf, tdi_buf, NULL);
+	if (!result)
+		raise_exception(EXCEPTION_ERROR, "jtagtap_cycle failed");
 }
