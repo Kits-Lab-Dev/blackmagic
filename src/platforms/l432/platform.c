@@ -44,6 +44,7 @@
 #include <libopencm3/stm32/exti.h>
 #include <libopencm3/cm3/scs.h>
 #include <libopencm3/cm3/dwt.h>
+#include <libopencm3/cm3/cortex.h>
 
 static uint32_t hw_version = 100;
 
@@ -67,35 +68,42 @@ bool platform_nrst_get_val()
 	return gpio_get(NRST_PORT, NRST_PIN) != 0;
 }
 
-const char *platform_target_voltage(void)
+/* One regular conversion. EOS stays set after a conversion, clear it or the wait returns at once with stale data */
+static uint32_t adc_sample(uint8_t channel)
 {
-	static char ret[] = "0.0V";
-
-	adc_set_regular_sequence(TARGET_V_ADC, 1, (uint8_t[]){TARGET_V_CH});
+	adc_set_regular_sequence(TARGET_V_ADC, 1, &channel);
+	ADC_ISR(TARGET_V_ADC) = ADC_ISR_EOC | ADC_ISR_EOS;
 	adc_start_conversion_regular(TARGET_V_ADC);
 	while (!adc_eos(TARGET_V_ADC))
 		continue;
-	uint32_t value = adc_read_regular(TARGET_V_ADC);
+	return adc_read_regular(TARGET_V_ADC);
+}
 
-	value *= 3379;	 /* 3.3 * 1024 == 3379.2 */
-	value += 104858; /* round, 0.05V * 2 ^ 21 == 104857.6 */
-	ret[0] = (value >> 21) + '0';
-	value &= (1 << 21) - 1;
-	value *= 10;
-	ret[2] = (value >> 21) + '0';
+/* Our own 3.3V rail (VDDA = VREF+), from VREFINT calibrated at VDDA = 3.0V */
+static uint32_t rail_mv(void)
+{
+	const uint32_t raw = adc_sample(ADC_CHANNEL_VREF);
+	return raw ? (3000U * ST_VREFINT_CAL) / raw : 0U;
+}
 
+/* T_VDD behind the R9/R10 divider by 2, the ADC reference being the rail */
+static uint32_t target_mv(const uint32_t rail)
+{
+	return (adc_sample(TARGET_V_CH) * rail * 2U) / 4095U;
+}
+
+const char *platform_target_voltage(void)
+{
+	static char ret[] = "0.0V";
+	const uint32_t tenths = (target_mv(rail_mv()) + 50U) / 100U;
+	ret[0] = (char)('0' + MIN(tenths / 10U, 9U));
+	ret[2] = (char)('0' + tenths % 10U);
 	return ret;
 }
 
 uint32_t platform_target_voltage_sense(void)
 {
-	adc_set_regular_sequence(TARGET_V_ADC, 1, (uint8_t[]){TARGET_V_CH});
-	adc_start_conversion_regular(TARGET_V_ADC);
-	while (!adc_eos(TARGET_V_ADC))
-		continue;
-	uint32_t value = adc_read_regular(TARGET_V_ADC);
-
-	return (value * 99U) / 8191U;
+	return target_mv(rail_mv()) / 100U;
 }
 
 #define BOOTMAGIC0 UINT32_C(0xb007da7a)
@@ -183,6 +191,9 @@ void platform_init(void)
 	adc_set_resolution(TARGET_V_ADC, ADC_CFGR1_RES_12_BIT);
 	adc_set_right_aligned(TARGET_V_ADC);
 	adc_set_sample_time_on_all_channels(TARGET_V_ADC, ADC_SMPR_SMP_247DOT5CYC);
+	/* VREFINT needs at least 4us of sampling */
+	adc_set_sample_time(TARGET_V_ADC, ADC_CHANNEL_VREF, ADC_SMPR_SMP_640DOT5CYC);
+	adc_enable_vrefint();
 
 	adc_power_on(TARGET_V_ADC);
 	for (int i = 0; i < 100000; i++)
@@ -252,6 +263,71 @@ void platform_ospeed_update(const uint32_t frequency)
 }
 
 #ifdef PLATFORM_HAS_POWER_SWITCH
+/*
+ * Soft start of the target supply. Q1/Q2 connect T_VDD straight to our 3.3V rail (XC6219, 22uF), and a target
+ * like Vagonka carries ~145uF: switching on at once shares the charge, the rail collapses and we reset.
+ *
+ * Instead PWR_EN is pulsed. A short low pulse only partly charges the gate (in through R4 1k2, back through
+ * R3 10k), so each pulse lets a bounded charge through the FETs. Our rail is measured right after every pulse
+ * (VREFINT): the pulse grows while the droop stays under TPWR_DROOP_MV and shrinks when it goes over. Once
+ * T_VDD reaches TPWR_DONE_MV the switch is left on. Derivation of the numbers: firmware/README.md of the board.
+ */
+#define TPWR_PERIOD_US     50U   /* gate recovers through 10k (~10us) and the LDO refills the 22uF */
+#define TPWR_PULSE_MIN_CYC 8U    /* 100ns at 80MHz, too short to open the FETs */
+#define TPWR_PULSE_MAX_US  25U   /* by then the FETs are fully on anyway */
+#define TPWR_DROOP_MV      200U  /* rail droop allowed per pulse, ~3.3uC from 22uF */
+#define TPWR_DONE_MV       3000U /* T_VDD at which the switch stays on */
+#define TPWR_TIMEOUT_MS    500U  /* give up and switch off: shorted or too heavy target */
+#define TPWR_NRST_HOLD_MS  5U    /* target nRST stays asserted this long after the supply is up */
+
+static void pwr_en_pulse(const uint32_t cycles)
+{
+	/* Masked: an interrupt inside the pulse would hold the FETs fully on */
+	const uint32_t primask = cm_mask_interrupts(1);
+	const uint32_t start = DWT_CYCCNT;
+	GPIO_BRR(PWR_EN_PORT) = PWR_EN_PIN;
+	while (DWT_CYCCNT - start < cycles)
+		continue;
+	GPIO_BSRR(PWR_EN_PORT) = PWR_EN_PIN;
+	cm_mask_interrupts(primask);
+}
+
+static bool target_power_soft_start(void)
+{
+	const uint32_t cycles_per_us = rcc_ahb_frequency / 1000000U;
+	const uint32_t period = TPWR_PERIOD_US * cycles_per_us;
+	const uint32_t pulse_max = TPWR_PULSE_MAX_US * cycles_per_us;
+	const uint32_t rail_idle = rail_mv();
+	uint32_t pulse = TPWR_PULSE_MIN_CYC;
+	uint32_t pulses = 0;
+	const uint32_t start_ms = platform_time_ms();
+
+	while (platform_time_ms() - start_ms < TPWR_TIMEOUT_MS) {
+		const uint32_t target = target_mv(rail_mv());
+		if (target >= TPWR_DONE_MV) {
+			gpio_clear(PWR_EN_PORT, PWR_EN_PIN);
+			DEBUG_INFO("tpwr: %" PRIu32 "mV after %" PRIu32 " pulses, %" PRIu32 "ms, last %" PRIu32 " cycles\n",
+				target, pulses, platform_time_ms() - start_ms, pulse);
+			return true;
+		}
+		const uint32_t begin = DWT_CYCCNT;
+		pwr_en_pulse(pulse);
+		++pulses;
+		const uint32_t rail = rail_mv();
+		const uint32_t droop = rail_idle > rail ? rail_idle - rail : 0U;
+		if (droop > TPWR_DROOP_MV)
+			pulse = MAX((pulse * 3U) / 4U, TPWR_PULSE_MIN_CYC);
+		else if (droop < TPWR_DROOP_MV / 2U)
+			pulse = MIN(pulse + pulse / 8U + 1U, pulse_max);
+		while (DWT_CYCCNT - begin < period)
+			continue;
+	}
+	gpio_set(PWR_EN_PORT, PWR_EN_PIN);
+	DEBUG_ERROR("tpwr: T_VDD %" PRIu32 "mV after %" PRIu32 "ms, last pulse %" PRIu32 " cycles\n",
+		target_mv(rail_mv()), (uint32_t)TPWR_TIMEOUT_MS, pulse);
+	return false;
+}
+
 bool platform_target_get_power(void)
 {
 	return !gpio_get(PWR_EN_PORT, PWR_EN_PIN);
@@ -259,8 +335,21 @@ bool platform_target_get_power(void)
 
 bool platform_target_set_power(const bool power)
 {
-	gpio_set_val(PWR_EN_PORT, PWR_EN_PIN, !power);
-	return true;
+	if (!power) {
+		gpio_set(PWR_EN_PORT, PWR_EN_PIN);
+		return true;
+	}
+	if (platform_target_get_power())
+		return true;
+	/*
+	 * A slow ramp leaves K1921VG015 half reset (no clocks, no JTAG): hold nRST through the ramp and release it
+	 * once the supply has settled, as a reset supervisor would.
+	 */
+	platform_nrst_set_val(true);
+	const bool result = target_power_soft_start();
+	platform_delay(TPWR_NRST_HOLD_MS);
+	platform_nrst_set_val(false);
+	return result;
 }
 #endif
 
