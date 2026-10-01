@@ -341,10 +341,7 @@ bool platform_target_set_power(const bool power)
 	}
 	if (platform_target_get_power())
 		return true;
-	/*
-	 * A slow ramp leaves K1921VG015 half reset (no clocks, no JTAG): hold nRST through the ramp and release it
-	 * once the supply has settled, as a reset supervisor would.
-	 */
+	/* Keep the target in reset while its supply ramps, as a reset supervisor would */
 	platform_nrst_set_val(true);
 	const bool result = target_power_soft_start();
 	platform_delay(TPWR_NRST_HOLD_MS);
