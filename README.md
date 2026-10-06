@@ -1,5 +1,9 @@
 # Black Magic Debug
 
+> **KitsLab fork** for the Lobzik probe (STM32L432) with the NIIET K1921VG015 target added.
+> What differs from upstream — [KITSLAB.md](KITSLAB.md) (in Russian). Upstream lives on
+> [Codeberg](https://codeberg.org/blackmagic-debug/blackmagic).
+
 The Black Magic Debug suite is a self-contained debugger for microcontrollers which needs no config
 files and auto-detects plus configures the connected targets. It is designed to be fast and easy to use.
 
